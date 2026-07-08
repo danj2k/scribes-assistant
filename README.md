@@ -156,6 +156,36 @@ Secrets are mounted as files via Docker secrets:
 |--------|------|-------------|
 | `bot_token` | `/run/secrets/bot_token` | Discord bot token |
 
+## Logging
+
+The bot logs to local files for debugging infrastructure issues that cannot be reported through Discord. Log files are stored in the shared Docker volume and persist across container restarts.
+
+| Container | Log file | What it contains |
+|-----------|----------|------------------|
+| `bot` | `/data/logs/bot.log` | Discord connection events, voice channel joins/leaves, slash command invocations, session lifecycle |
+| `transcriber` | `/data/logs/transcriber.log` | Transcription jobs started/completed, model loading, ffmpeg conversions, errors |
+
+### Viewing logs
+
+```bash
+# Tail the bot log
+docker compose exec bot tail -f /data/logs/bot.log
+
+# Tail the transcriber log
+docker compose exec transcriber tail -f /data/logs/transcriber.log
+
+# View recent errors
+docker compose exec bot grep ERROR /data/logs/bot.log | tail -20
+```
+
+### Log levels
+
+- **INFO** — normal operations (session started, transcription complete)
+- **WARNING** — recoverable issues (reconnection attempt, transcription took longer than expected)
+- **ERROR** — failures requiring attention (transcription failed, model not found, database locked)
+
+Logs rotate automatically — older log files are archived when they exceed 10MB.
+
 ## License
 
 See [LICENSE](LICENSE).
