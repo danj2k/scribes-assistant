@@ -1,0 +1,129 @@
+# Scribe's Assistant — Architecture
+
+## System Overview
+
+The system consists of two independent Docker containers communicating through a shared SQLite database and shared filesystem volume:
+
+1. **Bot container** — lightweight, handles Discord interaction and voice capture
+2. **Transcriber container** — heavyweight, runs speech-to-text on completed recordings
+
+This separation ensures the large transcription libraries (sherpa-onnx, model weights) only consume resources when actively processing, and the bot remains responsive even during transcription.
+
+## Components
+
+### Bot (scribes-bot)
+
+**Responsibilities:**
+- Connect to Discord gateway via py-cord
+- Respond to slash commands (/start, /stop, /status, /session, /help, /invite, /lexicon)
+- Join voice channels and capture per-speaker audio
+- Write WAV audio segments to the shared volume
+- Record session metadata in the SQLite queue
+- Poll for completed transcripts and upload them to Discord
+
+**Key dependencies:**
+- py-cord (Discord API, voice receive)
+- SQLite3 (session/queue management)
+- ffmpeg (audio processing, WAV handling)
+
+**Dockerfile:** `Dockerfile.bot` — Python slim base, minimal dependencies.
+
+### Transcriber (scribes-transcriber)
+
+**Responsibilities:**
+- Poll the SQLite queue for sessions with status QUEUED
+- Load the lexicon from SQLite
+- Run sherpa-onnx Whisper transcription with initial prompt injection
+- Generate word-level timestamps for speaker diarisation
+- Format and save transcripts as plain text
+- Update session status to TRANSCRIBED in the SQLite queue
+
+**Key dependencies:**
+- sherpa-onnx (speech-to-text, Whisper small model)
+- ffmpeg (audio conversion to 16kHz mono WAV)
+- SQLite3 (queue and lexicon access)
+
+**Dockerfile:** `Dockerfile.transcriber` — Python base with sherpa-onnx and ffmpeg.
+
+### Shared Volume
+
+A Docker volume mounted at `/data` in both containers provides the filesystem interface:
+
+```
+/data/
+├── recordings/          # WAV audio files per speaker per session
+│   └── <session_id>/
+│       ├── speaker_0.wav
+│       ├── speaker_1.wav
+│       └── ...
+├── transcripts/         # Final transcript files
+│   └── <session_id>.txt
+└── models/              # sherpa-onnx model weights
+    └── whisper-small/
+```
+
+### SQLite Queue
+
+The database file (`/data/queue.db`) is the coordination point between bot and transcriber. Tables:
+
+**sessions** — one row per recording session
+- session_id (TEXT, PK) — timestamp-based identifier
+- guild_id, voice_channel_id, transcript_channel_id
+- status — CREATED / RECORDING / STOPPED / QUEUED / TRANSCRIBING / TRANSCRIBED / FAILED
+- timestamps for lifecycle tracking
+
+**audio_files** — per-speaker audio files within a session
+- session_id (FK), speaker_index, file_path
+
+**lexicon** — words for initial-prompt injection
+- word, description, enabled flag
+
+**post_corrections** — fuzzy match corrections applied after transcription
+- original, replacement, context, case_sensitive flag
+
+## Data Flow
+
+### Recording (bot-driven)
+
+1. User issues /start → bot joins voice channel, creates session with status CREATED
+2. Bot receives voice data → decodes to WAV (py-cord limitation), writes to shared volume
+3. Speaker identification: initial speaker assignment by join order, with simple voice fingerprint refinement
+4. User issues /stop → bot updates status to STOPPED, finalises audio files
+5. Bot writes session to queue with status QUEUED
+
+### Transcription (transcriber-driven)
+
+1. Transcriber polls queue, finds session with status QUEUED
+2. Updates status to TRANSCRIBING
+3. Loads lexicon from SQLite, builds initial prompt string
+4. Converts WAV files to 16kHz mono via ffmpeg
+5. Runs sherpa-onnx Whisper small model with initial prompt
+6. Produces word-level timestamps, maps to speakers via voice fingerprint alignment
+7. Formats transcript with speaker labels and timestamps
+8. Writes transcript to /data/transcripts/<session_id>.txt
+9. Updates status to TRANSCRIBED
+
+### Delivery (bot-driven)
+
+1. Bot polls queue, finds session with status TRANSCRIBED
+2. Reads transcript file from shared volume
+3. Uploads as Discord file attachment to the transcript channel
+4. Updates status to DELIVERED (or marks as complete)
+
+## Configuration
+
+- `config.yaml` — mounted into both containers, controls model selection, thread settings, lexicon defaults
+- Docker secrets — bot token and any other sensitive values, mounted at `/run/secrets/`
+
+## Dependencies
+
+- **py-cord** — Discord bot framework with voice receive support
+- **sherpa-onnx** — Fast, CPU-optimised speech-to-text with Python bindings
+- **ffmpeg** — Audio format conversion and processing
+- **SQLite** — Lightweight, file-based database for queue coordination
+
+## Open Questions
+
+- Voice fingerprinting approach (how to reliably identify and separate speakers from overlapping audio)
+- Discord thread organisation (how to present transcripts to users)
+- Lexicon bulk import/export mechanism
