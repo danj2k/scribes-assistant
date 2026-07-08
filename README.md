@@ -18,7 +18,8 @@ The setup involves two roles — the **bot administrator** (you) who runs the in
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, and give it a name (e.g. "Scribe's Assistant").
 2. Navigate to the **Bot** tab and click **Add Bot**.
 3. Under **Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent** (these are not strictly required for this bot but may be useful for future features).
-4. Copy the **Bot Token** — you will need this during setup (see below).
+4. **Privacy** — in the **Bot** tab, ensure **Public Bot** is **disabled** (this is the default). With this disabled, your bot will not appear in any public bot directory. The only way someone can add it to their server is by having the direct invite link that you will generate in the next step. This prevents unauthorised servers from adding your bot.
+5. Copy the **Bot Token** — you will need this during setup (see below).
 
 #### Server administrator / DM
 
