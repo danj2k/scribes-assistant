@@ -75,9 +75,9 @@ Once the bot is set up on your Discord server, join a voice channel and use the 
 | `/session` | List previous sessions and their transcript status. |
 | `/invite` | Get a link to invite the bot to another server (if permitted). |
 | `/help` | Show available commands and usage information. |
-| `/lexicon add <word> <description>` | Add a word to the transcription lexicon. |
+| `/lexicon add term:<word> description:<description>` | Add a word to the transcription lexicon. |
 | `/lexicon list` | Show all words currently in the lexicon. |
-| `/lexicon remove <word>` | Remove a word from the lexicon. |
+| `/lexicon remove term:<word>` | Remove a word from the lexicon. |
 
 ### How It Works
 
@@ -91,10 +91,12 @@ Once the bot is set up on your Discord server, join a voice channel and use the 
 
 The lexicon helps the transcription model recognise unfamiliar or fantasy words. For example, if your campaign features a character named "Tharion" or a spell called "Zephyr's Grasp", adding these to the lexicon improves transcription accuracy.
 
+Slash commands use Discord's named parameters, so there's no ambiguity between the word and its description:
+
 **Examples:**
-- `/lexicon add Tharion Character name, wizard NPC`
-- `/lexicon add Zephyr's Grasp Spell name, used by the party druid`
-- `/lexicon add Waterdeep City name, major location in the campaign`
+- `/lexicon add term:Tharion description:Character name, wizard NPC`
+- `/lexicon add term:Zephyr's Grasp description:Spell name, used by the party druid`
+- `/lexicon add term:Waterdeep description:City name, major location in the campaign`
 
 Words are used as hints during transcription — the model will be more likely to recognise them correctly.
 
