@@ -8,12 +8,24 @@ A Discord bot for automated transcription of tabletop RPG sessions. Records voic
 
 - Docker and Docker Compose installed on the server
 - A Discord bot application created at https://discord.com/developers/applications
-- The bot invited to your Discord server with these permissions:
-  - Send Messages
-  - Create Public Threads
-  - Attach Files
-  - Use Voice Activity (to join voice channels)
-  - Application Commands (for slash commands)
+
+#### Creating a Bot and Setting Permissions
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, and give it a name (e.g. "Scribe's Assistant").
+2. Navigate to the **Bot** tab and click **Add Bot**.
+3. Under **Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent** (these are not strictly required for this bot but may be useful for future features).
+4. Copy the **Bot Token** — you will need this during setup (see below).
+5. Navigate to the **OAuth2** > **URL Generator** tab. Under **Scopes**, select `bot`. Under **Bot Permissions**, select the following:
+   - Send Messages
+   - Create Public Threads
+   - Attach Files
+   - Use Voice Activity
+   - Application Commands
+6. Copy the generated URL at the bottom of the page and open it in your browser. Select the server you want to add the bot to and authorise it.
+
+For more details, see Discord's guide on [Adding a Bot to a Server](https://discord.com/developers/docs/getting-started#step-2-adding-your-bot-to-servers).
+
+> **Note:** You must have the **Manage Server** permission on the target Discord server to invite a bot.
 
 ### Setup
 
