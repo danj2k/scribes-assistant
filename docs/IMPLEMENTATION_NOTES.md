@@ -46,3 +46,37 @@ sherpa-onnx model weights (~500MB for whisper-small) are stored in a Docker volu
 ### Transcript Delivery
 
 Discord has a file size limit (8MB for free servers). Most D&D sessions (3-4 hours) should produce transcripts well under this limit. If a transcript exceeds it, split into multiple parts or compress.
+
+### Logging Configuration
+
+Both containers use Python's standard `logging` module with two handlers:
+- **Console handler** — writes to stdout/stderr (visible via `docker compose logs`)
+- **File handler** — `RotatingFileHandler` writing to `/data/logs/<container>.log`, max 10MB per file, 5 archived backups
+
+Log format includes timestamp, container name, log level, and message. Example:
+```
+2025-01-15 20:34:12 bot INFO: Session 2025-01-15_20-30-00 started in channel #general
+2025-01-15 20:45:33 transcriber INFO: Transcription job queued for session 2025-01-15_20-30-00
+```
+
+The shared `/data/logs/` directory is mounted in both Dockerfiles so either container can access the logs for debugging.
+
+### Slash Command Error Handling
+
+Discord slash commands have built-in parameter validation — mistyped command names or parameter names are rejected by Discord's client before they reach the bot. The bot only needs to handle semantic errors:
+
+- **Missing or invalid parameters** — respond with a user-friendly error message (e.g. "Term not found in lexicon")
+- **Empty session** — `/status` or `/stop` when no session is active returns "No active recording session"
+- **Concurrent session** — `/start` when already recording returns "Session already in progress"
+
+These are normal application logic responses, not exceptions. Use `respond()` or `respond(embed=error_embed)` to give clear feedback.
+
+### Infrastructure Error Handling
+
+Errors that cannot be reported to Discord (connection loss, crashes, model failures) are handled as follows:
+
+- **Discord connection lost** — py-cord handles reconnection automatically with exponential backoff. Log a WARNING on each attempt, INFO when reconnected.
+- **Transcriber fails mid-job** — update session status to FAILED in SQLite. The bot can check for failed sessions and optionally notify the user. Log the full error traceback.
+- **SQLite lock contention** — WAL mode allows concurrent reads. If a write fails due to a lock, retry with a short backoff (100ms, 3 attempts).
+- **Model not found** — if `/data/models/whisper-small/` is missing or corrupt, the transcriber logs an ERROR and exits. The bot remains functional but transcription will not proceed until the model is restored.
+- **Container crash** — Docker restarts the container automatically (`restart: unless-stopped`). The bot reconnects to Discord; the transcriber resumes polling.

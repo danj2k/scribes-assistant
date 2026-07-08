@@ -110,6 +110,15 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 3. Uploads as Discord file attachment to the transcript channel
 4. Updates status to DELIVERED (or marks as complete)
 
+## Logging
+
+Both containers log to files in the shared Docker volume at `/data/logs/`:
+
+- **`/data/logs/bot.log`** — Discord gateway events, voice channel activity, slash command invocations, session state transitions
+- **`/data/logs/transcriber.log`** — transcription job progress, model loading, ffmpeg conversion output, error traces
+
+Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 10MB with old files archived. Both containers use Python's `logging` module with a `RotatingFileHandler` writing to the shared volume, so logs persist across container restarts and are accessible from either container.
+
 ## Configuration
 
 - `config.yaml` — mounted into both containers, controls model selection, thread settings, lexicon defaults
