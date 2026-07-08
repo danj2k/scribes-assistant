@@ -4,10 +4,10 @@ Handles model loading and audio file transcription.
 """
 
 import os
+import tarfile
 import time
 import logging
 import tempfile
-import tarfile
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +84,21 @@ class TranscriptionWorker:
             return None
 
 
+def _progress_hook(block_num: int, block_size: int, total_size: int) -> None:
+    """Print download progress to stderr."""
+    downloaded = block_num * block_size
+    if total_size > 0:
+        pct = min(100.0, downloaded / total_size * 100)
+        mb_downloaded = downloaded / (1024 * 1024)
+        mb_total = total_size / (1024 * 1024)
+        logger.info(
+            "Downloading model: %.1f%% (%.0f/%.0f MB)", pct, mb_downloaded, mb_total
+        )
+    else:
+        mb_downloaded = downloaded / (1024 * 1024)
+        logger.info("Downloading model: %.0f MB", mb_downloaded)
+
+
 def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
     """Download or verify the whisper model exists.
 
@@ -118,17 +133,31 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
 
     logger.info("Downloading model from %s...", model_url)
 
-    # Download
     tar_path = model_path / "model.tar.bz2"
-    urllib.request.urlretrieve(model_url, tar_path)
 
-    # Extract (guard: skip if download did not produce a file)
-    if tar_path.exists():
+    try:
+        urllib.request.urlretrieve(model_url, str(tar_path), reporthook=_progress_hook)
+    except Exception as e:
+        if tar_path.exists():
+            tar_path.unlink()
+        raise RuntimeError(f"Model download failed: {e}") from e
+
+    # Extract
+    try:
         with tarfile.open(tar_path, "r:bz2") as tar:
             tar.extractall(model_path)
-        tar_path.unlink()
-    else:
-        logger.warning("Download did not produce expected archive at %s", tar_path)
+    except Exception as e:
+        raise RuntimeError(f"Model extraction failed: {e}") from e
+    finally:
+        if tar_path.exists():
+            tar_path.unlink()
+
+    # Verify
+    missing = [f for f in required_files if not (model_path / f).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Model extraction incomplete — missing: {missing}"
+        )
 
     logger.info("Model downloaded to %s", model_path)
     return str(model_path)

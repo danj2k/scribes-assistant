@@ -1,0 +1,229 @@
+"""Tests for scripts.download_model."""
+
+import os
+import sys
+import tempfile
+import shutil
+from pathlib import Path
+from urllib.error import URLError
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from scripts.download_model import download_model, main, REQUIRED_FILES, _progress_hook
+
+
+@pytest.fixture
+def tmp_model_dir():
+    """Create a temporary directory for model files."""
+    d = tempfile.mkdtemp()
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
+class TestDownloadModel:
+    """Tests for download_model()."""
+
+    def test_skip_when_files_exist(self, tmp_model_dir):
+        """Should skip download if all required files already exist."""
+        for f in REQUIRED_FILES:
+            (Path(tmp_model_dir) / f).write_bytes(b"fake model data")
+
+        result = download_model(tmp_model_dir)
+        assert result == tmp_model_dir
+
+    def test_force_re_download(self, tmp_model_dir):
+        """Should re-download when force=True even if files exist."""
+        for f in REQUIRED_FILES:
+            (Path(tmp_model_dir) / f).write_bytes(b"fake model data")
+
+        fake_tar = b"fake tar data"
+
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(fake_tar)
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                mock_tar = MagicMock()
+                mock_open.return_value.__enter__ = lambda s: mock_tar
+                mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                result = download_model(tmp_model_dir, force=True)
+
+        assert result == tmp_model_dir
+
+    def test_download_and_extract(self, tmp_model_dir):
+        """Should download, extract, and verify model files."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extractall(path):
+            for f in REQUIRED_FILES:
+                (Path(tmp_model_dir) / f).write_bytes(b"extracted")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                mock_tar = MagicMock()
+                mock_tar.extractall.side_effect = fake_extractall
+                mock_open.return_value.__enter__ = lambda s: mock_tar
+                mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                result = download_model(tmp_model_dir)
+
+        assert result == tmp_model_dir
+        for f in REQUIRED_FILES:
+            assert (Path(tmp_model_dir) / f).exists()
+
+    def test_download_failure(self, tmp_model_dir):
+        """Should raise RuntimeError if download fails."""
+        with patch(
+            "scripts.download_model.urllib.request.urlretrieve",
+            side_effect=URLError("network error"),
+        ):
+            with pytest.raises(RuntimeError, match="Download failed"):
+                download_model(tmp_model_dir)
+
+    def test_extraction_failure(self, tmp_model_dir):
+        """Should raise RuntimeError if extraction fails."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"corrupt data")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                mock_open.side_effect = Exception("bad archive")
+                with pytest.raises(RuntimeError, match="Extraction failed"):
+                    download_model(tmp_model_dir)
+
+    def test_missing_files_after_extraction(self, tmp_model_dir):
+        """Should raise FileNotFoundError if required files are missing."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extractall(path):
+            # Only create one of the three required files
+            (Path(tmp_model_dir) / REQUIRED_FILES[0]).write_bytes(b"partial")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                mock_tar = MagicMock()
+                mock_tar.extractall.side_effect = fake_extractall
+                mock_open.return_value.__enter__ = lambda s: mock_tar
+                mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                with pytest.raises(FileNotFoundError, match="missing"):
+                    download_model(tmp_model_dir)
+
+    def test_creates_model_directory(self, tmp_model_dir):
+        """Should create the model directory if it doesn't exist."""
+        nested = os.path.join(tmp_model_dir, "nested", "model")
+        os.makedirs(nested, exist_ok=True)
+        for f in REQUIRED_FILES:
+            (Path(nested) / f).write_bytes(b"fake model data")
+
+        result = download_model(nested)
+        assert result == nested
+        assert os.path.isdir(nested)
+
+    def test_archive_cleaned_up_on_success(self, tmp_model_dir):
+        """Should remove the archive after successful extraction."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extractall(path):
+            for f in REQUIRED_FILES:
+                (Path(tmp_model_dir) / f).write_bytes(b"extracted")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                mock_tar = MagicMock()
+                mock_tar.extractall.side_effect = fake_extractall
+                mock_open.return_value.__enter__ = lambda s: mock_tar
+                mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                download_model(tmp_model_dir)
+
+        assert not (Path(tmp_model_dir) / "model.tar.bz2").exists()
+
+    def test_archive_cleaned_up_on_extraction_failure(self, tmp_model_dir):
+        """Should remove archive even if extraction fails."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                mock_open.side_effect = Exception("bad archive")
+                with pytest.raises(RuntimeError):
+                    download_model(tmp_model_dir)
+
+        assert not (Path(tmp_model_dir) / "model.tar.bz2").exists()
+
+
+class TestProgressHook:
+    """Tests for _progress_hook()."""
+
+    def test_with_total_size(self, capsys):
+        """Should print progress when total_size is known."""
+        _progress_hook(10, 1024, 10240)
+        output = capsys.readouterr().err
+        assert "Downloading" in output
+
+    def test_without_total_size(self, capsys):
+        """Should print MB downloaded when total_size is 0."""
+        _progress_hook(10, 1024, 0)
+        output = capsys.readouterr().err
+        assert "MB" in output
+
+
+class TestMain:
+    """Tests for main() CLI entry point."""
+
+    def test_main_default_args(self):
+        """Should call download_model with default directory."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.return_value = "data/models/whisper-small"
+            sys.argv = ["download_model.py"]
+            main()
+            mock_dl.assert_called_once_with(
+                "data/models/whisper-small", force=False
+            )
+
+    def test_main_custom_dir(self):
+        """Should use custom directory from argv."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.return_value = "/tmp/model"
+            sys.argv = ["download_model.py", "/tmp/model"]
+            main()
+            mock_dl.assert_called_once_with("/tmp/model", force=False)
+
+    def test_main_force_flag(self):
+        """Should pass force=True when --force is given."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.return_value = "/tmp/model"
+            sys.argv = ["download_model.py", "/tmp/model", "--force"]
+            main()
+            mock_dl.assert_called_once_with("/tmp/model", force=True)
+
+    def test_main_short_force_flag(self):
+        """Should pass force=True when -f is given."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.return_value = "/tmp/model"
+            sys.argv = ["download_model.py", "/tmp/model", "-f"]
+            main()
+            mock_dl.assert_called_once_with("/tmp/model", force=True)
+
+    def test_main_download_error(self):
+        """Should exit with code 1 on error."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.side_effect = RuntimeError("download failed")
+            sys.argv = ["download_model.py"]
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+    def test_main_file_not_found_error(self):
+        """Should exit with code 1 on FileNotFoundError."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.side_effect = FileNotFoundError("missing files")
+            sys.argv = ["download_model.py"]
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1

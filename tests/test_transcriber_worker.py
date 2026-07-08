@@ -1,3 +1,4 @@
+from pathlib import Path
 """Tests for transcriber.worker — TranscriptionWorker with mocked sherpa-onnx."""
 
 import pytest
@@ -69,10 +70,21 @@ class TestWorkerTranscribe:
 class TestDownloadModel:
     """Tests for the download_model helper."""
 
+    @patch("transcriber.worker.tarfile")
     @patch("transcriber.worker.urllib")
-    def test_download_model_creates_dir(self, mock_urllib, tmp_path):
+    def test_download_model_creates_dir(self, mock_urllib, mock_tarfile, tmp_path):
         """download_model creates the model directory."""
         from transcriber.worker import download_model
+
+        def fake_extractall(path):
+            files = ["encoder-epoch-99-avg-1.onnx", "decoder-epoch-99-avg-1.onnx", "joiner-epoch-99-avg-1.onnx"]
+            for f in files:
+                (Path(path) / f).write_bytes(b"fake model data")
+
+        mock_tar = MagicMock()
+        mock_tar.extractall.side_effect = fake_extractall
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
 
         model_dir = str(tmp_path / "models")
         result = download_model(model_dir, model_url="http://example.com/model.tar.gz")
