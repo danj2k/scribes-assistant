@@ -28,12 +28,22 @@ logger = logging.getLogger(__name__)
 
 
 class TranscriptionWorker:
-    """Wraps sherpa-onnx for audio-to-text transcription."""
+    """Wraps sherpa-onnx for audio-to-text transcription.
 
-    def __init__(self, model_path: str, num_threads: int = 2, device: str = "cpu"):
+    Args:
+        model_path: Path to the sherpa-onnx model directory.
+        num_threads: CPU threads for sherpa-onnx.
+        device: Compute device (only "cpu" supported for Whisper).
+        initial_prompt: Optional text hint for Whisper (lexicon terms).
+            Injected into the decoder to improve recognition of custom vocabulary.
+    """
+
+    def __init__(self, model_path: str, num_threads: int = 2, device: str = "cpu",
+                 initial_prompt: str = ""):
         self.model_path = model_path
         self.num_threads = num_threads
         self.device = device
+        self.initial_prompt = initial_prompt
         self.recognizer = None
 
     def load_model(self):
@@ -50,6 +60,8 @@ class TranscriptionWorker:
                 self.model_path, "joiner-epoch-99-avg-1.onnx"
             )
             config.model_config.num_threads = self.num_threads
+            if self.initial_prompt:
+                config.model_config.transducer.initial_prompt = self.initial_prompt
 
             self.recognizer = sherpa_onnx.OfflineRecognizer(config)
             logger.info("Loaded sherpa-onnx model from %s", self.model_path)

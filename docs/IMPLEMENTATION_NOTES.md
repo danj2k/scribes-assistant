@@ -14,9 +14,17 @@ sherpa-onnx will consume as many CPU cores as available by default. On a 4-core 
 
 sherpa-onnx expects 16kHz mono WAV input. py-cord delivers audio at Discord's native rate (48kHz stereo). ffmpeg must be used in the transcriber to convert before running inference. This is an extra step but unavoidable given the py-cord limitation.
 
-### Lexicon Initial Prompt Injection
+### Lexicon Integration — Two-Stage Correction
 
-The lexicon is injected into the Whisper `initial_prompt` parameter. This is a plain text hint, not a hard dictionary. The prompt should be formatted as a comma-separated list of words, preceded by a description like "This is a D&D session with fantasy terminology:" to give the model context. The prompt has a token limit — prioritise by frequency and importance.
+The lexicon improves transcription quality through two independent mechanisms:
+
+**Stage 1: Initial prompt injection (before transcription)**
+The lexicon terms are formatted by `build_initial_prompt()` into a text hint: "This is a D&D session with fantasy terminology: Term1, Term2, ...". This is passed to sherpa-onnx via `config.model_config.transducer.initial_prompt`. The prompt primes the Whisper decoder to recognise custom vocabulary. Capped at 30 terms to stay within token limits.
+
+**Stage 2: Fuzzy post-correction (after transcription)**
+When the transcript is delivered, `DeliveryLoop._correct_text()` applies Levenshtein-based fuzzy matching to every word. Each word is checked against the lexicon — if a close match exists (within 50% of the word's length), it's corrected to the canonical form. This catches misrecognitions that the initial prompt didn't prevent.
+
+Both stages use the same YAML lexicon file (`/data/lexicon.yaml`). Terms added via `/lexicon add` are immediately available for both stages in future sessions.
 
 ### SQLite Concurrency
 
@@ -42,6 +50,8 @@ Bot tokens and other secrets are provided via Docker secrets, which mount as fil
 ### Model Weight Persistence
 
 sherpa-onnx model weights (~500MB for whisper-small) are stored in a Docker volume mounted at `/data/models/`. This volume persists across container rebuilds — only downloaded once on first run.
+
+A standalone download script (`scripts/download_model.py`) handles the download with progress reporting. It can be run via `docker compose run transcriber python -m scripts.download_model`. The script is idempotent — skips download if all required files already exist. The transcriber's main loop also calls `download_model()` as a fallback on startup.
 
 ### Transcript Delivery
 

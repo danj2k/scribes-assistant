@@ -123,7 +123,9 @@ Slash commands use Discord's named parameters, so there's no ambiguity between t
 - `/lexicon add term:Zephyr's Grasp description:Spell name, used by the party druid`
 - `/lexicon add term:Waterdeep description:City name, major location in the campaign`
 
-Words are used as hints during transcription — the model will be more likely to recognise them correctly.
+Words are used in two ways to improve transcription:
+1. **Initial prompt injection** — lexicon terms are passed to the Whisper model as a text hint, priming it to recognise custom vocabulary during transcription.
+2. **Post-correction** — after transcription, the bot applies fuzzy matching to correct common misrecognitions of lexicon words.
 
 ---
 

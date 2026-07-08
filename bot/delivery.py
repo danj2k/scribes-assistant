@@ -5,11 +5,13 @@ for new transcripts ready to deliver.
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 import discord
 
 from shared.database import Database, STATUS_COMPLETE
+from shared.lexicon import Lexicon
 
 
 class DeliveryLoop:
@@ -20,6 +22,17 @@ class DeliveryLoop:
         self.db = db
         self.logger = logger
         self.poll_interval = 5  # seconds
+        # Load lexicon for post-correction of transcripts
+        self._lexicon = None
+        try:
+            lexicon_file = bot.config.lexicon_file
+            self._lexicon = Lexicon(lexicon_file)
+            self.logger.info(
+                f"Loaded lexicon with {len(self._lexicon.terms)} terms "
+                f"for transcript correction"
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not load lexicon for correction: {e}")
     
     async def run(self):
         """Main polling loop — runs until the bot shuts down."""
@@ -52,6 +65,22 @@ class DeliveryLoop:
             session = dict(row)
             await self._deliver(session)
     
+    def _correct_text(self, text: str) -> str:
+        """Apply lexicon fuzzy correction to transcript text.
+
+        Splits on word boundaries, corrects each word independently,
+        and reassembles with original whitespace preserved.
+        """
+        if not self._lexicon or not self._lexicon.terms:
+            return text
+
+        def _replace_word(match):
+            word = match.group(0)
+            corrected = self._lexicon.correct(word)
+            return corrected if corrected else word
+
+        return re.sub(r"\b\w+\b", _replace_word, text)
+
     async def _deliver(self, session: dict):
         """Deliver a single transcript to its Discord channel."""
         session_id = session["id"]
@@ -75,7 +104,11 @@ class DeliveryLoop:
             return
         
         transcript_text = path.read_text()
-        
+
+        # Apply lexicon-based post-correction
+        if self._lexicon and self._lexicon.terms:
+            transcript_text = self._correct_text(transcript_text)
+
         # Create a thread for this transcript
         try:
             thread = await channel.create_thread(
