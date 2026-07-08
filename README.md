@@ -48,18 +48,18 @@ For more details, see Discord's guide on [Adding a Bot to a Server](https://disc
    cd scribes-assistant
    ```
 
-2. **Create the bot token secret:**
+2. **Store your Discord bot token securely** (Docker secrets):
    ```bash
    mkdir -p secrets
    echo "YOUR_BOT_TOKEN_HERE" > secrets/bot_token
    chmod 600 secrets/bot_token
    ```
+   Both the bot and transcriber services receive this token via a read-only Docker secret mounted at `/run/secrets/bot_token`. It is never baked into an image or visible in `docker inspect`.
 
 3. **Review and edit `config.yaml`:**
    ```yaml
    whisper_model: small          # whisper tiny/base/small/medium/large
    transcriber_threads: 2        # CPU cores for transcription (leave headroom for bot)
-   transcript_channel: null      # null = channel where commands are issued
    lexicon_enabled: true
    ```
 
@@ -70,7 +70,7 @@ For more details, see Discord's guide on [Adding a Bot to a Server](https://disc
 
 5. **Download the model (first run only):**
    ```bash
-   docker compose exec transcriber python download_model.py
+   docker compose exec transcriber python -c "from transcriber.worker import download_model; download_model('/data/models/whisper-small')"
    ```
    This downloads ~500MB of model weights to the shared volume. Subsequent container rebuilds will not re-download.
 

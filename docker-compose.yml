@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  # Discord bot service — connects to Discord, captures voice, delivers transcripts
+  bot:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    container_name: scribes-bot
+    restart: unless-stopped
+    secrets:
+      - bot_token
+    environment:
+      - DISCORD_TOKEN_FILE=/run/secrets/bot_token
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/data/logs/bot.log
+    volumes:
+      - scribes-data:/data
+    networks:
+      - scribes-net
+    depends_on:
+      transcriber:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import discord; print('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Transcriber service — polls for queued audio, runs sherpa-onnx
+  transcriber:
+    build:
+      context: .
+      dockerfile: transcriber/Dockerfile
+    container_name: scribes-transcriber
+    restart: unless-stopped
+    secrets:
+      - bot_token
+    environment:
+      - DISCORD_TOKEN_FILE=/run/secrets/bot_token
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/data/logs/transcriber.log
+    volumes:
+      - scribes-data:/data
+    networks:
+      - scribes-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+secrets:
+  bot_token:
+    file: ./secrets/bot_token
+
+volumes:
+  scribes-data:
+    driver: local
+
+networks:
+  scribes-net:
+    driver: bridge
