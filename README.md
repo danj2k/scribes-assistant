@@ -6,26 +6,38 @@ A Discord bot for automated transcription of tabletop RPG sessions. Records voic
 
 ### Prerequisites
 
+The setup involves two roles — the **bot administrator** (you) who runs the infrastructure, and the **server administrator / DM** who controls access to the Discord server.
+
+#### Bot administrator (you)
+
 - Docker and Docker Compose installed on the server
 - A Discord bot application created at https://discord.com/developers/applications
 
-#### Creating a Bot and Setting Permissions
+##### Creating a Bot Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, and give it a name (e.g. "Scribe's Assistant").
 2. Navigate to the **Bot** tab and click **Add Bot**.
 3. Under **Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent** (these are not strictly required for this bot but may be useful for future features).
 4. Copy the **Bot Token** — you will need this during setup (see below).
-5. Navigate to the **OAuth2** > **URL Generator** tab. Under **Scopes**, select `bot`. Under **Bot Permissions**, select the following:
+
+#### Server administrator / DM
+
+The bot needs to be invited to your Discord server with the correct permissions. This step requires the **Manage Server** permission on the target Discord server.
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), select your bot application, and navigate to **OAuth2** > **URL Generator**.
+2. Under **Scopes**, select `bot`.
+3. Under **Bot Permissions**, select the following:
    - Send Messages
    - Create Public Threads
    - Attach Files
    - Use Voice Activity
    - Application Commands
-6. Copy the generated URL at the bottom of the page and open it in your browser. Select the server you want to add the bot to and authorise it.
+4. Copy the generated URL at the bottom of the page and open it in your browser.
+5. Select the server you want to add the bot to and authorise it.
 
 For more details, see Discord's guide on [Adding a Bot to a Server](https://discord.com/developers/docs/getting-started#step-2-adding-your-bot-to-servers).
 
-> **Note:** You must have the **Manage Server** permission on the target Discord server to invite a bot.
+> **Note:** If you are not the server administrator, send the generated invite link to your DM or server admin and ask them to complete this step.
 
 ### Setup
 
