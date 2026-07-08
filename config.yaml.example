@@ -3,8 +3,10 @@
 
 # Discord bot settings
 discord:
-  # Guild ID to restrict bot commands to (leave empty for any server)
-  # Find this by enabling Developer Mode in Discord, then right-clicking your server
+  # Numeric Snowflake ID (17-20 digits) to restrict bot to this server only
+  # Leave empty to allow any server. To find it: enable Developer Mode in
+  # Discord (User Settings > Advanced), then right-click your server > Copy Server ID
+  # https://discord.com/developers/docs/reference#snowflakes
   guild_id: ""
   # Command permissions
   permissions:

@@ -145,7 +145,7 @@ Settings are defined in `config.yaml` (see `config.yaml.example` for all options
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `discord.guild_id` | `""` (empty) | Restrict bot commands to a specific server (empty = any server) |
+| `discord.guild_id` | `""` (empty) | Numeric [Snowflake ID](https://discord.com/developers/docs/reference#snowflakes) of the server to restrict the bot to (empty = any server). See [Obtaining your Server ID](#obtaining-your-server-id). |
 | `discord.permissions.restrict_commands` | `false` | Restrict command usage to specific roles |
 | `discord.permissions.allowed_roles` | `[]` | Roles permitted when restrictions are enabled |
 | `lexicon.enabled` | `true` | Enable/disable lexicon features |
@@ -157,6 +157,14 @@ Settings are defined in `config.yaml` (see `config.yaml.example` for all options
 | `logging.level` | `INFO` | Log level (DEBUG/INFO/WARNING/ERROR) |
 | `logging.max_size_mb` | `10` | Max log file size before rotation |
 | `logging.backup_count` | `5` | Number of rotated log files to keep |
+
+### Obtaining your Server ID
+
+Discord uses numeric [Snowflake IDs](https://discord.com/developers/docs/reference#snowflakes) (17–20 digits) for servers, channels, users, and other resources — not names. To copy your server's ID:
+
+1. Enable **Developer Mode** in Discord (User Settings > Advanced > Developer Mode).
+2. Right-click your server's name in the sidebar and select **Copy Server ID**.
+
 
 ## Secrets
 
