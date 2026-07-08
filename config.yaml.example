@@ -6,14 +6,24 @@ discord:
   # Guild ID to restrict bot commands to (leave empty for any server)
   # Find this by enabling Developer Mode in Discord, then right-clicking your server
   guild_id: ""
+  # Command permissions
+  permissions:
+    # Restrict command usage to specific roles (default: false = everyone can use)
+    restrict_commands: false
+    # List of role names or IDs allowed when restrict_commands is true
+    allowed_roles: []
 
 # Lexicon settings
 lexicon:
+  # Enable/disable lexicon features (add/remove/list commands)
+  enabled: true
   # Levenshtein distance threshold for fuzzy post-correction matching
   # Lower = stricter matching, higher = more permissive
   # 0.0 = exact match only, 1.0 = match almost anything
   # Recommended starting point: 0.2
   fuzzy_threshold: 0.2
+  # Path to lexicon file (relative to /data in the container)
+  file: /data/lexicon.yaml
 
 # Session settings
 session:

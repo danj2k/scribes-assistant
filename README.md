@@ -109,7 +109,7 @@ Once the bot is set up on your Discord server, join a voice channel and use the 
 1. **Start a session:** Join a voice channel and type `/start`. The bot joins and begins recording.
 2. **Play your game:** The bot records in the background. You don't need to do anything.
 3. **End the session:** Type `/stop`, or simply disconnect from the voice channel. If the bot is the only one left, it will automatically end the session after a short idle period, save the recording, and disconnect. Either way, the audio is queued for transcription.
-4. **Wait for the transcript:** Transcription takes a few minutes (depending on session length). The bot will post the transcript to the channel where you issued the command.
+4. **Wait for the transcript:** Transcription takes a few minutes (depending on session length). The bot creates a thread in the channel where you issued the command and posts the transcript there, keeping each session's output organised.
 5. **Check status:** Use `/status` to see if transcription is in progress or complete.
 
 ### Lexicon
@@ -141,12 +141,22 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full system documentation.
 
 ## Configuration
 
+Settings are defined in `config.yaml` (see `config.yaml.example` for all options with documented defaults).
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `whisper_model` | `small` | Whisper model size (tiny/base/small/medium/large) |
-| `transcriber_threads` | `2` | CPU cores allocated to transcription |
-| `transcript_channel` | `null` | Channel for transcript delivery (null = command channel) |
-| `lexicon_enabled` | `true` | Enable/disable lexicon features |
+| `discord.guild_id` | `""` (empty) | Restrict bot commands to a specific server (empty = any server) |
+| `discord.permissions.restrict_commands` | `false` | Restrict command usage to specific roles |
+| `discord.permissions.allowed_roles` | `[]` | Roles permitted when restrictions are enabled |
+| `lexicon.enabled` | `true` | Enable/disable lexicon features |
+| `lexicon.fuzzy_threshold` | `0.2` | Levenshtein distance for fuzzy post-correction matching |
+| `session.idle_timeout` | `60` | Seconds before auto-ending session when bot is alone |
+| `transcriber.model` | `small` | Whisper model size (tiny/base/small/medium) |
+| `transcriber.threads` | `0` | CPU threads for transcription (0 = all available) |
+| `transcriber.poll_interval` | `10` | Seconds between queue polling cycles |
+| `logging.level` | `INFO` | Log level (DEBUG/INFO/WARNING/ERROR) |
+| `logging.max_size_mb` | `10` | Max log file size before rotation |
+| `logging.backup_count` | `5` | Number of rotated log files to keep |
 
 ## Secrets
 

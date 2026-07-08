@@ -58,6 +58,10 @@ A Docker volume mounted at `/data` in both containers provides the filesystem in
 │       └── ...
 ├── transcripts/         # Final transcript files
 │   └── <session_id>.txt
+├── lexicon.yaml         # Lexicon terms and post-correction rules
+├── logs/                # Container log files
+│   ├── bot.log
+│   └── transcriber.log
 └── models/              # sherpa-onnx model weights
     └── whisper-small/
 ```
@@ -134,5 +138,4 @@ Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 
 ## Open Questions
 
 - Voice fingerprinting approach (how to reliably identify and separate speakers from overlapping audio)
-- Discord thread organisation (how to present transcripts to users)
 - Lexicon bulk import/export mechanism
