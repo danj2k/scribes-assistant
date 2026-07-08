@@ -165,6 +165,7 @@ Settings are defined in `config.yaml` (see `config.yaml.example` for all options
 | `lexicon.enabled` | `true` | Enable/disable lexicon features |
 | `lexicon.fuzzy_threshold` | `0.2` | Levenshtein distance for fuzzy post-correction matching |
 | `session.idle_timeout` | `60` | Seconds before auto-ending session when bot is alone |
+| `transcript_channel_id` | `""` (empty) | Discord channel ID for transcript delivery. Empty = channel where the session was started |
 | `transcriber.model` | `small` | Whisper model size (tiny/base/small/medium) |
 | `transcriber.threads` | `0` | CPU threads for transcription (0 = all available) |
 | `transcriber.poll_interval` | `10` | Seconds between queue polling cycles |
