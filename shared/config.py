@@ -117,7 +117,6 @@ class Config:
         token_file = self.get("bot.token_file", "/run/secrets/bot_token")
         if Path(token_file).exists():
             return Path(token_file).read_text().strip()
-        return os.environ.get("DISCORD_TOKEN", "")
 
     # -- Lexicon properties ---------------------------------------------------
 

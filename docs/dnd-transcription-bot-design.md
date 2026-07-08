@@ -404,30 +404,48 @@ class LexiconEntry(Base):
 ```yaml
 services:
   bot:
-    build: ./bot
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
     restart: unless-stopped
-    env_file: .env
+    secrets:
+      - bot_token
+    environment:
+      - DISCORD_TOKEN_FILE=/run/secrets/bot_token
     volumes:
-      - ./data:/data
-      - ./config:/config
-    mem_limit: 300m
+      - scribes-data:/data
 
   transcriber:
-    build: ./transcriber
-    restart: "no"          # invoked on demand, not a long-running daemon
-    env_file: .env
+    build:
+      context: .
+      dockerfile: transcriber/Dockerfile
+    restart: unless-stopped
+    secrets:
+      - bot_token
+    environment:
+      - DISCORD_TOKEN_FILE=/run/secrets/bot_token
     volumes:
-      - ./data:/data
-      - ./config:/config
-    mem_limit: 3000m         # comfortable headroom for medium.en (Sec 4.2) plus loud.cpp diarization
+      - scribes-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+secrets:
+  bot_token:
+    file: ./secrets/bot_token
+
+volumes:
+  scribes-data:
+    driver: local
 ```
 
 ### 8.2 Notes
 
-- `mem_limit` values above are illustrative placeholders — set once real numbers are measured on your box with the chosen Whisper model size. With 16GB total RAM available, these limits exist mainly to catch runaway processes rather than to squeeze into a tight budget.
-- Keep the `transcriber` image separate from `bot` so the bot image stays small and doesn't need PyTorch/CTranslate2 installed at all.
-- Model weights should be downloaded once and cached in a named volume (not baked into the image) so rebuilding the image doesn't re-download multi-hundred-MB model files.
-- `.env` holds the Discord bot token and any other secrets; never commit it.
+- Discord bot token is delivered via Docker Secrets (file-based, at `/run/secrets/bot_token`), not environment variables. Non-sensitive settings live in `config.yaml`.
+- Keep the `transcriber` image separate from `bot` so the bot image stays small and doesn't need sherpa-onnx installed at all.
+- Model weights are downloaded once and cached in a named volume (not baked into the image) so rebuilding the image doesn't re-download model files.
+- The `scripts/download_model.py` script handles model downloads with progress reporting and verification.
 
 ### Resolved
 - Docker Compose confirmed as acceptable for deployment on the home box.

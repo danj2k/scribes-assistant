@@ -12,8 +12,6 @@ services:
       - bot_token
     environment:
       - DISCORD_TOKEN_FILE=/run/secrets/bot_token
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - LOG_FILE=/data/logs/bot.log
     volumes:
       - scribes-data:/data
     networks:
@@ -39,8 +37,6 @@ services:
       - bot_token
     environment:
       - DISCORD_TOKEN_FILE=/run/secrets/bot_token
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - LOG_FILE=/data/logs/transcriber.log
     volumes:
       - scribes-data:/data
     networks:
