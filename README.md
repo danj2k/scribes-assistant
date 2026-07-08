@@ -70,9 +70,21 @@ For more details, see Discord's guide on [Adding a Bot to a Server](https://disc
 
 5. **Download the model (first run only):**
    ```bash
-   docker compose exec transcriber python -c "from transcriber.worker import download_model; download_model('/data/models/whisper-small')"
+   docker compose run transcriber python scripts/download_model.py
    ```
-   This downloads ~500MB of model weights to the shared volume. Subsequent container rebuilds will not re-download.
+   This downloads the Whisper small model (~500MB) to the shared volume. The script:
+   - Skips download if model files already exist
+   - Shows download progress (MB and percentage)
+   - Verifies all required files are extracted
+   - Cleans up the archive after extraction
+
+   To force re-download or use a different model size:
+   ```bash
+   docker compose run transcriber python scripts/download_model.py --force
+   docker compose run transcriber python scripts/download_model.py --model tiny
+   ```
+
+   The transcriber will also attempt to download the model automatically on first start if it detects missing files.
 
 ### Stopping
 
