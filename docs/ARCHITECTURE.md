@@ -22,7 +22,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Poll for completed transcripts and upload them to Discord
 
 **Key dependencies:**
-- py-cord (Discord API, voice receive)
+- py-cord 2.8.0 (Discord API, voice receive)
 - SQLite3 (session/queue management)
 - ffmpeg (audio processing, WAV handling)
 
@@ -126,7 +126,7 @@ Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 
 
 ## Dependencies
 
-- **py-cord** — Discord bot framework with voice receive support
+- **py-cord 2.8.0** — Discord bot framework with voice receive support
 - **sherpa-onnx** — Fast, CPU-optimised speech-to-text with Python bindings
 - **ffmpeg** — Audio format conversion and processing
 - **SQLite** — Lightweight, file-based database for queue coordination

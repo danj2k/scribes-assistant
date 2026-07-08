@@ -1,0 +1,40 @@
+# Scribe's Assistant — Configuration
+# All settings have sensible defaults. Only override what you need.
+
+# Discord bot settings
+discord:
+  # Guild ID to restrict bot commands to (leave empty for any server)
+  # Find this by enabling Developer Mode in Discord, then right-clicking your server
+  guild_id: ""
+
+# Lexicon settings
+lexicon:
+  # Levenshtein distance threshold for fuzzy post-correction matching
+  # Lower = stricter matching, higher = more permissive
+  # 0.0 = exact match only, 1.0 = match almost anything
+  # Recommended starting point: 0.2
+  fuzzy_threshold: 0.2
+
+# Session settings
+session:
+  # Seconds of silence before auto-ending a session when bot is alone in voice channel
+  idle_timeout: 60
+
+# Transcriber settings
+transcriber:
+  # Seconds between queue polling cycles
+  poll_interval: 10
+  # Number of CPU threads for sherpa-onnx (0 = use all available cores)
+  # Set to match your available cores minus 1 (e.g. 3 for a 4-core machine)
+  threads: 0
+  # Whisper model size: tiny, base, small, medium, large-v3
+  model: small
+
+# Logging
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  # Maximum log file size in MB before rotation
+  max_size_mb: 10
+  # Number of rotated log files to keep
+  backup_count: 5

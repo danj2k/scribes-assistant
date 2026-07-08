@@ -126,3 +126,83 @@ rebuilds.
 mount path. Download/setup logic should check for existing weights
 before attempting to download. The Dockerfile should install
 `sherpa-onnx` and any compiled dependencies but not bundle model weights.
+
+
+---
+
+## 8. Py-cord Version: 2.8.0 (Community Fork)
+
+**Decision**: Use `py-cord` 2.8.0 (the actively maintained community fork
+at github.com/Pycord-Development/pycord).
+
+**Context**: The original py-cord project (Pycord Development) has not
+released since 2.6.1 (September 2024). The community fork at the same
+GitHub organisation has continued active development and released 2.8.0
+(May 2026) with Python 3.14 support, DAVE E2EE for voice, and ongoing
+bug fixes. This is the current stable release.
+
+**Impact**: Install via `py-cord>=2.8.0`. API surface is compatible with
+the original design's assumptions about slash commands and voice receive.
+
+---
+
+## 9. Lexicon Storage Format: YAML
+
+**Decision**: Store the lexicon as a YAML file (`lexicon.yaml`) rather
+than JSON.
+
+**Rationale**: YAML is more human-readable and easier to hand-edit,
+which matters since the lexicon will be maintained manually by the DM.
+YAML also supports comments, which allows annotating entries without
+changing the data structure.
+
+**Schema**:
+```yaml
+terms:
+  - word: Aboleth
+    description: "Powerful aberration, ancient evil, tentacled horror"
+    added_by: discord_user_id
+    added_at: "2026-07-08T19:30:00Z"
+corrections:
+  - original: "aboleth"
+    replacement: "Aboleth"
+    added_by: discord_user_id
+    added_at: "2026-07-08T19:30:00Z"
+```
+
+**Impact**: The lexicon module must read/write YAML. The `pyyaml`
+library will be a dependency of both containers (used by the bot for
+lexicon commands, and by the transcriber for prompt injection).
+
+---
+
+## 10. Levenshtein Distance Library: Levenshtein
+
+**Decision**: Use the `Levenshtein` package (C-backed Python bindings
+for the Welford-Levenshtein algorithm).
+
+**Rationale**: Lightweight, fast (C extension), actively maintained,
+and widely used. `rapidfuzz` is heavier (full fuzzy matching toolkit)
+and unnecessary for this use case. `python-Levenshtein` is the same
+package under an older name.
+
+**Default threshold**: 0.2 — strict enough to avoid false positives on
+short fantasy names, permissive enough to catch common mishearings.
+Configurable via `config.yaml`.
+
+**Impact**: Add `Levenshtein` as a dependency of the transcriber
+container.
+
+---
+
+## 11. Configuration Format: YAML
+
+**Decision**: Use a single `config.yaml` file for all non-sensitive
+settings, mounted into both Docker containers.
+
+**Rationale**: YAML is human-readable, supports comments, and aligns
+with the lexicon format choice. Docker secrets (bot token) are
+file-based and mounted separately at `/run/secrets/`.
+
+**Impact**: Both containers need `pyyaml` as a dependency. A
+`config.yaml.example` is provided with documented defaults.
