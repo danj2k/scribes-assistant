@@ -101,3 +101,18 @@ the model size hardcoded into the directory name. Two independent problems:
   2. Updated `add_transcript()` to execute `UPDATE audio_files SET status = 'transcribed', transcript_text = ? WHERE id = ?`, persisting the transcription result.
   3. Updated `transcriber/main.py` to call `db.add_transcript(file_id, session_id, text)` instead of `db.update_file_status(file_id, "transcribed")` on successful transcription.
 - **Impact**: Transcribed text is now stored in the database and available for query, search, and future delivery. Both file-based and database-based transcript access paths work.
+
+### Bug #5: Sessions created with STATUS_QUEUED instead of STATUS_RECORDING
+- **File**: `shared/database.py`
+- **Issue**: `create_session()` inserted sessions with `STATUS_QUEUED` but the bot has already joined a voice channel and started recording at that point. The `/session` list and `/status` commands display this status, so users saw "Queued" during an active recording session.
+- **Additional bug found**: `end_session()` also used `STATUS_QUEUED` as the terminal status — a session that just ended should not transition back to "queued". This was corrected to `STATUS_COMPLETE`.
+- **Fix (shared/database.py)**:
+  1. Changed `create_session()` to insert with `STATUS_RECORDING` instead of `STATUS_QUEUED` (line 83).
+  2. Changed `end_session()` to set status to `STATUS_COMPLETE` instead of `STATUS_QUEUED` (line 131).
+  3. Updated schema default from `'queued'` to `'recording'` for consistency.
+  4. Updated docstring to reflect the new initial status.
+- **Fix (tests/test_database.py)**:
+  1. Updated `test_create_session` to assert `STATUS_RECORDING`.
+  2. Updated `test_get_queued_sessions` to explicitly set sessions to queued before testing (since sessions now start as recording).
+  3. Updated `test_end_session` to also verify status becomes `STATUS_COMPLETE`.
+- **Impact**: Sessions now correctly show "Recording" in the UI immediately after creation. Ended sessions correctly show "Complete" rather than reverting to "Queued".

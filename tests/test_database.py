@@ -1,7 +1,7 @@
 """Tests for shared.database — SQLite session and lexicon storage."""
 
 import pytest
-from shared.database import Database, STATUS_QUEUED, STATUS_COMPLETE
+from shared.database import Database, STATUS_QUEUED, STATUS_RECORDING, STATUS_COMPLETE
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ class TestSessionManagement:
         session = db.get_session("sess1")
         assert session is not None
         assert session["discord_guild_id"] == "123456"
-        assert session["status"] == STATUS_QUEUED
+        assert session["status"] == STATUS_RECORDING
 
     def test_get_session(self, db):
         """A created session can be retrieved."""
@@ -45,11 +45,12 @@ class TestSessionManagement:
         assert session["status"] == STATUS_COMPLETE
 
     def test_end_session(self, db):
-        """Ending a session sets ended_at timestamp."""
+        """Ending a session sets ended_at timestamp and status to complete."""
         _make_session(db)
         db.end_session("sess1")
         session = db.get_session("sess1")
         assert session["ended_at"] is not None
+        assert session["status"] == STATUS_COMPLETE
 
     def test_set_thread_id(self, db):
         """Thread ID can be stored on a session."""
@@ -74,6 +75,9 @@ class TestSessionManagement:
         """Queued sessions are returned."""
         _make_session(db, sid="s1", guild="111", channel="222")
         _make_session(db, sid="s2", guild="333", channel="444")
+        # Sessions start as recording; explicitly set to queued for this test
+        db.update_session_status("s1", STATUS_QUEUED)
+        db.update_session_status("s2", STATUS_QUEUED)
         queued = db.get_queued_sessions()
         ids = [s["id"] for s in queued]
         assert "s1" in ids

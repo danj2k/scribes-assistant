@@ -34,7 +34,7 @@ class Database:
                     discord_guild_id  TEXT NOT NULL,
                     discord_channel_id TEXT NOT NULL,
                     thread_id         TEXT,
-                    status            TEXT NOT NULL DEFAULT 'queued',
+                    status            TEXT NOT NULL DEFAULT 'recording',
                     started_at        TEXT NOT NULL,
                     ended_at          TEXT,
                     transcript_path   TEXT
@@ -74,13 +74,13 @@ class Database:
     # -- session CRUD --------------------------------------------------------
 
     def create_session(self, session_id: str, guild_id: str, channel_id: str):
-        """Create a new session in QUEUED status."""
+        """Create a new session in RECORDING status."""
         now = datetime.now(timezone.utc).isoformat()
         with self._cursor() as cur:
             cur.execute(
                 """INSERT INTO sessions (id, discord_guild_id, discord_channel_id, status, started_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (session_id, guild_id, channel_id, STATUS_QUEUED, now),
+                (session_id, guild_id, channel_id, STATUS_RECORDING, now),
             )
 
     def get_session(self, session_id: str) -> dict | None:
@@ -128,7 +128,7 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 "UPDATE sessions SET ended_at = ?, status = ? WHERE id = ?",
-                (now, STATUS_QUEUED, session_id),
+                (now, STATUS_COMPLETE, session_id),
             )
 
     def set_thread_id(self, session_id: str, thread_id: str):
