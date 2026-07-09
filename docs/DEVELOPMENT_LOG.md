@@ -127,3 +127,24 @@ the model size hardcoded into the directory name. Two independent problems:
 - **Fix (bot/main.py)**: Changed `Lexicon(config.lexicon_file)` to `Lexicon(config.lexicon_file, config.lexicon_threshold)`.
 - **Fix (bot/delivery.py)**: Changed `Lexicon(lexicon_file)` to `Lexicon(lexicon_file, bot.config.lexicon_threshold)`.
 - **Impact**: The fuzzy correction threshold is now configurable via `config.yaml` (`lexicon.fuzzy_threshold`). Default value of `0.2` means corrections are only offered when the edit distance is within 20% of the key length — tighter than the old hardcoded 50%, reducing false-positive corrections.
+
+### Bug #8: Commands have no permission checks
+- **Files**: `bot/commands.py`, `tests/test_commands.py`
+- **Issue**: All bot commands (`/start`, `/stop`, `/status`, `/session`, `/lexicon_add`, `/lexicon_remove`, `/lexicon_list`) were accessible to every server member regardless of their role. There was no way for server administrators to restrict command access via the `restrict_commands` and `allowed_roles` configuration options. The config fields existed and were read, but never enforced.
+- **Root cause**: The permission-checking logic was never implemented — each command handler simply proceeded directly to its business logic.
+- **Fix (bot/commands.py)**:
+  1. Added `_check_permission(interaction, config) -> tuple[bool, str | None]` helper function (line 21). Returns `(True, None)` when access is granted, or `(False, error_message)` when denied.
+  2. The helper checks `config.restrict_commands` — if `False`, all users are allowed. If `True` but `config.allowed_roles` is empty, all users are allowed. Otherwise, the user's role names (case-insensitive) and role IDs are compared against `config.allowed_roles`.
+  3. Added permission check calls at the top of 7 command handlers: `start_command`, `stop_command`, `status_command`, `session_command`, `lexicon_add`, `lexicon_remove`, `lexicon_list`.
+  4. Left `/help` and `/invite` unrestricted — information commands should always be accessible.
+- **Fix (tests/test_commands.py)**: Created new test file with 10 test cases covering:
+  - Restrictions disabled (`restrict_commands=False`)
+  - Empty allowed roles list
+  - Role name match (including case-insensitive)
+  - Role ID match
+  - No roles → denied
+  - Unrelated role → denied
+  - Multiple roles with one match
+  - Mixed role types in config
+  - String role ID does not falsely match numeric role ID
+- **Impact**: Server administrators can now use `restrict_commands: true` and `allowed_roles` in `config.yaml` to limit which Discord roles can execute bot commands. Unconfigured servers (the default) continue to allow all users.

@@ -18,12 +18,44 @@ from shared.database import (
 )
 
 
+def _check_permission(interaction: discord.Interaction, config) -> tuple[bool, str | None]:
+    """Check if the user has permission to use a restricted command.
+
+    Returns (allowed, error_message). If allowed is True, the command
+    may proceed. If False, error_message should be sent as an ephemeral reply.
+    """
+    if not config.restrict_commands:
+        return True, None
+
+    allowed_roles = config.allowed_roles
+    if not allowed_roles:
+        return True, None  # Empty list = everyone allowed
+
+    user_role_names = {role.name.lower() for role in interaction.user.roles}
+    user_role_ids = {role.id for role in interaction.user.roles}
+
+    for role in allowed_roles:
+        if isinstance(role, int) and role in user_role_ids:
+            return True, None
+        if isinstance(role, str) and role.lower() in user_role_names:
+            return True, None
+
+    return False, "You don't have permission to use this command."
+
+
 def setup_commands(bot: commands.Bot):
     """Register all slash commands with the bot."""
 
     # --- /start ---
     @bot.tree.command(name="start", description="Start recording your session")
     async def start_command(interaction: discord.Interaction):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         db = bot.db
         guild_id = str(interaction.guild_id)
 
@@ -86,6 +118,13 @@ def setup_commands(bot: commands.Bot):
     # --- /stop ---
     @bot.tree.command(name="stop", description="Stop recording and queue for transcription")
     async def stop_command(interaction: discord.Interaction):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         db = bot.db
         guild_id = str(interaction.guild_id)
 
@@ -117,6 +156,13 @@ def setup_commands(bot: commands.Bot):
     # --- /status ---
     @bot.tree.command(name="status", description="Check current session status")
     async def status_command(interaction: discord.Interaction):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         db = bot.db
         guild_id = str(interaction.guild_id)
 
@@ -158,6 +204,13 @@ def setup_commands(bot: commands.Bot):
     # --- /session ---
     @bot.tree.command(name="session", description="List previous sessions")
     async def session_command(interaction: discord.Interaction):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         db = bot.db
         guild_id = str(interaction.guild_id)
 
@@ -233,6 +286,13 @@ def setup_commands(bot: commands.Bot):
     @lexicon_group.command(name="add", description="Add a word to the transcription lexicon")
     @app_commands.describe(term="The word to add", description="What this word means")
     async def lexicon_add(interaction: discord.Interaction, term: str, description: str):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         if not bot.config.lexicon_enabled:
             await interaction.response.send_message(
                 "Lexicon features are disabled.",
@@ -251,6 +311,13 @@ def setup_commands(bot: commands.Bot):
 
     @lexicon_group.command(name="list", description="Show all lexicon words")
     async def lexicon_list(interaction: discord.Interaction):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         if not bot.config.lexicon_enabled:
             await interaction.response.send_message(
                 "Lexicon features are disabled.",
@@ -276,6 +343,13 @@ def setup_commands(bot: commands.Bot):
     @lexicon_group.command(name="remove", description="Remove a word from the lexicon")
     @app_commands.describe(term="The word to remove")
     async def lexicon_remove(interaction: discord.Interaction, term: str):
+
+        # Permission check
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         if not bot.config.lexicon_enabled:
             await interaction.response.send_message(
                 "Lexicon features are disabled.",
