@@ -148,3 +148,12 @@ the model size hardcoded into the directory name. Two independent problems:
   - Mixed role types in config
   - String role ID does not falsely match numeric role ID
 - **Impact**: Server administrators can now use `restrict_commands: true` and `allowed_roles` in `config.yaml` to limit which Discord roles can execute bot commands. Unconfigured servers (the default) continue to allow all users.
+
+### Bug #9 — Unused Bot Token in Transcriber (Severity: LOW)
+
+- **File**: `transcriber/main.py`
+- **Issue**: `_read_bot_token()` function read and validated the Discord bot token, but the transcriber never used it. The transcriber communicates with the bot via SQLite status flags — it marks files as "transcribed" and stores transcript text in the database. The bot's delivery loop picks up the completed transcripts. The token was dead code with a side effect: startup would fail with `RuntimeError` if the token file was missing, even though the token served no purpose.
+- **Root cause**: The transcriber was originally designed to potentially post directly to Discord, but that responsibility was moved to the bot's delivery loop. The token code was left behind.
+- **Fix**: Removed `_read_bot_token()` function entirely, removed the `bot_token = _read_bot_token()` call and its comment, removed unused `import os`. The transcriber now starts without requiring any Discord credentials.
+- **Impact**: The transcriber is a simpler, more focused component. It no longer needs Docker secrets for the bot token, and its startup is no longer gated on token availability.
+- **Tests**: 102/102 passing (no new tests needed — the dead code had no callers to test).

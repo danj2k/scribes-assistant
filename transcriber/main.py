@@ -4,7 +4,6 @@ Polls the shared database for queued audio files, runs sherpa-onnx
 transcription, and stores results for the bot's delivery loop.
 """
 
-import os
 import sys
 import time
 import logging
@@ -20,28 +19,10 @@ from transcriber.worker import download_model, TranscriptionWorker
 
 logger = logging.getLogger("scribes.transcriber")
 
-
-def _read_bot_token() -> str:
-    """Read the Discord bot token from a Docker secret or environment variable."""
-    secret_path = os.environ.get("DISCORD_TOKEN_FILE")
-    if secret_path and os.path.exists(secret_path):
-        return Path(secret_path).read_text().strip()
-    token = os.environ.get("DISCORD_TOKEN", "")
-    if not token:
-        raise RuntimeError(
-            "No Discord token found. Set DISCORD_TOKEN env var or mount "
-            "a secret at DISCORD_TOKEN_FILE."
-        )
-    return token
-
-
 def run_worker(config_path: str = "/app/config.yaml"):
     """Main worker loop — poll DB, transcribe, store transcript for delivery."""
     config = Config(config_path)
     db = Database(config.database_path)
-
-    # Read bot token for optional Discord thread posting
-    bot_token = _read_bot_token()
 
     # Download model if not present
     download_model(config.model_path)
