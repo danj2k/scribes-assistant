@@ -101,11 +101,11 @@ def main():
     db = Database(config.database_path)
     lexicon = Lexicon(config.lexicon_file)
 
-    # Delivery loop (posts transcripts to Discord threads)
-    delivery = DeliveryLoop(db=db)
-
     # Create and run bot
     bot = ScribesBot(config=config, db=db, lexicon=lexicon)
+
+    # Delivery loop (posts transcripts to Discord threads)
+    delivery = DeliveryLoop(bot, db, logger)
     bot.delivery_loop = delivery
 
     # Register slash commands

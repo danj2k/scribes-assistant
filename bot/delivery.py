@@ -22,6 +22,8 @@ class DeliveryLoop:
         self.db = db
         self.logger = logger
         self.poll_interval = 5  # seconds
+        # Track the background task for is_running checks
+        self._task: asyncio.Task | None = None
         # Load lexicon for post-correction of transcripts
         self._lexicon = None
         try:
@@ -34,6 +36,21 @@ class DeliveryLoop:
         except Exception as e:
             self.logger.warning(f"Could not load lexicon for correction: {e}")
     
+    @property
+    def is_running(self) -> bool:
+        """Whether the delivery loop task is currently active."""
+        return self._task is not None and not self._task.done()
+
+    def start(self):
+        """Start the delivery loop as a background task.
+
+        Safe to call multiple times — subsequent calls are no-ops
+        if the loop is already running.
+        """
+        if self.is_running:
+            return
+        self._task = asyncio.create_task(self.run())
+
     async def run(self):
         """Main polling loop — runs until the bot shuts down."""
         self.logger.info("Transcript delivery loop started")
