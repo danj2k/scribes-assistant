@@ -34,6 +34,7 @@ _DEFAULTS = {
         "poll_interval": 10,
         "threads": 2,
         "model": "small",
+        "model_dir": "/data/models",
     },
     "logging": {
         "level": "INFO",
@@ -158,8 +159,13 @@ class Config:
 
     @property
     def model_path(self) -> str:
-        """Path to the sherpa-onnx model directory."""
-        return self.get("model_dir", "data/models/whisper-small")
+        """Full path to the sherpa-onnx model directory.
+        
+        Composed from the base model_dir setting and the model size.
+        E.g. /data/models + whisper-small -> /data/models/whisper-small
+        """
+        base = self.get("transcriber.model_dir", "/data/models")
+        return os.path.join(base, f"whisper-{self.model_size}")
 
     @property
     def sample_rate(self) -> int:

@@ -45,6 +45,8 @@ transcriber:
   threads: 0
   # Whisper model size: tiny, base, small, medium, large-v3
   model: small
+  # Base directory for model storage (model name is appended automatically)
+  model_dir: /data/models
 
 # Logging
 logging:

@@ -59,3 +59,36 @@ All changes to `transcriber/main.py` verified via diff:
 - `worker.close()` removed (line 107 is now just `db.close()`)
 
 File backed up to `transcriber/main.py.bak` before patching.
+
+## 2025-07-09 -- Bug Fix #4: model_path uses wrong config key and hardcoded model size
+
+### Bug #4: model_path uses wrong config key and a relative path
+
+**Symptom:** `Config.model_path` returned a relative path `data/models/whisper-small` with
+the model size hardcoded into the directory name. Two independent problems:
+
+1. **Wrong config key:** The property looked up top-level key `"model_dir"` which does not
+   exist in `_DEFAULTS` (the transcriber config lives under `transcriber.*`). The lookup
+   always fell back to the hardcoded default string.
+
+2. **Hardcoded model size in path:** The default string `"data/models/whisper-small"` baked
+   in `whisper-small`, making the directory name independent of the `model` config setting.
+   A user who sets `model: medium` still gets a path pointing at `whisper-small`.
+
+3. **Relative path:** Default was `"data/models/whisper-small"` while every other path in
+   the config uses an absolute path (`/data/queue.db`, `/data/lexicon.yaml`, etc.).
+
+**Fix (shared/config.py):**
+- Added `model_dir` key to `_DEFAULTS["transcriber"]` with default `/data/models`.
+- Changed `model_path` property to compose the full path dynamically:
+  `os.path.join(base, f"whisper-{self.model_size}")` where `base` comes from
+  `transcriber.model_dir` and `model_size` from `transcriber.model`.
+- This means changing `model: medium` in config.yaml automatically produces the correct
+  path `/data/models/whisper-medium`.
+
+**Fix (config.yaml.example):**
+- Added `model_dir: /data/models` to the transcriber section with explanatory comment.
+
+**Verification:**
+- All 92 tests pass (0 regressions).
+- Config loads correctly: `model_path` now computes from `model_dir` + `model_size`.
