@@ -157,3 +157,17 @@ the model size hardcoded into the directory name. Two independent problems:
 - **Fix**: Removed `_read_bot_token()` function entirely, removed the `bot_token = _read_bot_token()` call and its comment, removed unused `import os`. The transcriber now starts without requiring any Discord credentials.
 - **Impact**: The transcriber is a simpler, more focused component. It no longer needs Docker secrets for the bot token, and its startup is no longer gated on token availability.
 - **Tests**: 102/102 passing (no new tests needed — the dead code had no callers to test).
+
+### Bug #10 — Non-Deterministic Tie Breaking in Lexicon Correct (Severity: MEDIUM)
+
+- **File**: `shared/lexicon.py`
+- **Issue**: When multiple lexicon terms tied on Levenshtein distance from a query word, the chosen result depended on dictionary iteration order — which is non-deterministic across Python versions, runs, and insertion orders. This meant the same transcription could produce different corrected terms on different runs.
+- **Root cause**: The `correct()` method used a strict `dist < best_distance` comparison, so the first term to achieve the best distance won, and all subsequent ties were silently skipped.
+- **Fix**: Added deterministic tie-breaking in `correct()` when distances are equal:
+  1. Prefer the shorter term (fewer characters wins).
+  2. If lengths are also equal, prefer alphabetical order (case-insensitive).
+- **Tests**: Added `TestCorrectTieBreaking` class (2 tests):
+  - `test_shorter_term_wins_on_tie`: "fireball" (len 8) vs "firebll" (len 7) both at distance 1 from "firebal" — "firebll" wins.
+  - `test_alphabetical_on_equal_distance_and_length`: "fireball" vs "firebalx" both at distance 1 and length 8 from "firebal" — "fireball" wins alphabetically.
+- **Impact**: Lexicon correction is now fully deterministic. The same transcription input will always produce the same corrected output.
+- **Tests**: 104/104 passing.

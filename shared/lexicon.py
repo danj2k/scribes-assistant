@@ -119,7 +119,13 @@ class Lexicon:
         best_distance = float("inf")
         for term_key, entry in self.terms.items():
             dist = Levenshtein.distance(key, term_key)
-            if dist < best_distance:
+            if (best_term is None
+                    or dist < best_distance
+                    or (dist == best_distance
+                        and len(entry["term"]) < len(best_term))
+                    or (dist == best_distance
+                        and len(entry["term"]) == len(best_term)
+                        and entry["term"].lower() < best_term.lower())):
                 best_distance = dist
                 best_term = entry["term"]
 

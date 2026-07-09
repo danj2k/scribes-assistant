@@ -102,3 +102,29 @@ class TestBuildInitialPrompt:
         """An empty list returns an empty prompt."""
         prompt = build_initial_prompt([])
         assert prompt == ""
+
+
+class TestCorrectTieBreaking:
+    def test_shorter_term_wins_on_tie(self):
+        """When two candidates have equal edit distance, the shorter term is preferred."""
+        lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.5
+        lex.terms = {}
+        # Both distance 1 from "firebal": "fireball" (len 8) vs "firebll" (len 7)
+        # Insert longer term first so old code would pick it (first match wins)
+        lex.terms["fireball"] = {"term": "fireball"}
+        lex.terms["firebll"] = {"term": "firebll"}
+        result = lex.correct("firebal")
+        assert result == "firebll", f"Expected shorter term 'firebll', got {result!r}"
+
+    def test_alphabetical_on_equal_distance_and_length(self):
+        """When distance AND length are tied, the alphabetically earlier term wins."""
+        lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.5
+        lex.terms = {}
+        # Both distance 1 from "firebal", both length 8
+        # Insert alphabetically-later term first: old code picks "firebalx", new picks "fireball"
+        lex.terms["firebalx"] = {"term": "firebalx"}
+        lex.terms["fireball"] = {"term": "fireball"}
+        result = lex.correct("firebal")
+        assert result == "fireball", f"Expected 'fireball' (alphabetical), got {result!r}"
