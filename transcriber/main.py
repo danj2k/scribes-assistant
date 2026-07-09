@@ -84,7 +84,7 @@ def run_worker(config_path: str = "/app/config.yaml"):
 
                 # Mark session as complete with transcript path
                 db.set_transcript_path(session_id, str(transcript_path))
-                db.update_file_status(file_id, "transcribed")
+                db.add_transcript(file_id, session_id, text)
 
                 logger.info(f"File {file_id} transcribed successfully")
 

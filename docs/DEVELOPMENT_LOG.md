@@ -92,3 +92,12 @@ the model size hardcoded into the directory name. Two independent problems:
 **Verification:**
 - All 92 tests pass (0 regressions).
 - Config loads correctly: `model_path` now computes from `model_dir` + `model_size`.
+
+### Bug #7: add_transcript is a no-op (HIGH PRIORITY)
+- **File**: `shared/database.py`, `transcriber/main.py`
+- **Issue**: `Database.add_transcript()` accepted `text` and `channel_id` parameters but discarded them, only updating the status. Transcribed text was never stored in the database.
+- **Fix**:
+  1. Added `transcript_text TEXT` column to the `audio_files` table schema to store the transcribed text.
+  2. Updated `add_transcript()` to execute `UPDATE audio_files SET status = 'transcribed', transcript_text = ? WHERE id = ?`, persisting the transcription result.
+  3. Updated `transcriber/main.py` to call `db.add_transcript(file_id, session_id, text)` instead of `db.update_file_status(file_id, "transcribed")` on successful transcription.
+- **Impact**: Transcribed text is now stored in the database and available for query, search, and future delivery. Both file-based and database-based transcript access paths work.

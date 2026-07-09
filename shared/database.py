@@ -46,6 +46,7 @@ class Database:
                     file_path  TEXT NOT NULL,
                     size_bytes INTEGER,
                     status     TEXT NOT NULL DEFAULT 'queued',
+                    transcript_text TEXT,
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
 
@@ -188,7 +189,8 @@ class Database:
         """Store the transcribed text for a completed audio file."""
         with self._cursor() as cur:
             cur.execute(
-                "UPDATE audio_files SET status = 'transcribed' WHERE id = ?", (file_id,)
+                "UPDATE audio_files SET status = 'transcribed', transcript_text = ? WHERE id = ?",
+                (text, file_id),
             )
 
     # -- lexicon -------------------------------------------------------------
