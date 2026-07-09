@@ -28,7 +28,7 @@ class DeliveryLoop:
         self._lexicon = None
         try:
             lexicon_file = bot.config.lexicon_file
-            self._lexicon = Lexicon(lexicon_file)
+            self._lexicon = Lexicon(lexicon_file, bot.config.lexicon_threshold)
             self.logger.info(
                 f"Loaded lexicon with {len(self._lexicon.terms)} terms "
                 f"for transcript correction"

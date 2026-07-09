@@ -60,6 +60,7 @@ class TestDeliveryLoopLexicon:
 
         # Create a temp lexicon
         lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.2
         lex.terms = {
             "theron": {"term": "Theron", "description": "A noble elf name"},
             "grimjaw": {"term": "Grimjaw", "description": "Dwarf name"},
@@ -78,6 +79,7 @@ class TestDeliveryLoopLexicon:
         bot.config.lexicon_file = "/tmp/test_lex.yaml"
 
         lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.2
         lex.terms = {"theron": {"term": "Theron", "description": "elf"}}
 
         loop = DeliveryLoop(bot, MagicMock(), MagicMock())
@@ -93,6 +95,7 @@ class TestDeliveryLoopLexicon:
         bot.config.lexicon_file = "/tmp/test_lex.yaml"
 
         lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.2
         lex.terms = {"theron": {"term": "Theron", "description": "elf"}}
 
         loop = DeliveryLoop(bot, MagicMock(), MagicMock())
@@ -109,6 +112,7 @@ class TestDeliveryLoopLexicon:
         bot.config.lexicon_file = "/tmp/test_lex.yaml"
 
         lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.2
         lex.terms = {}
 
         loop = DeliveryLoop(bot, MagicMock(), MagicMock())

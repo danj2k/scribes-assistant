@@ -33,8 +33,9 @@ class Lexicon:
 
     DEFAULT_PATH = "/data/lexicon.yaml"
 
-    def __init__(self, file_path: str | None = None):
+    def __init__(self, file_path: str | None = None, fuzzy_threshold: float = 0.2):
         self._file_path = file_path or self.DEFAULT_PATH
+        self._fuzzy_threshold = max(0.0, min(1.0, fuzzy_threshold))
         self.terms: dict[str, dict] = {}
         if Path(self._file_path).exists():
             self.load()
@@ -122,8 +123,8 @@ class Lexicon:
                 best_distance = dist
                 best_term = entry["term"]
 
-        # Only correct when distance is reasonably small (< 50% of length)
-        if best_distance <= max(len(key) // 2, 1):
+        # Only correct when distance is within configured threshold proportion
+        if best_distance <= max(int(len(key) * self._fuzzy_threshold), 1):
             return best_term
         return None
 

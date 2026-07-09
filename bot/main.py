@@ -99,7 +99,7 @@ def main():
 
     # Initialise shared components
     db = Database(config.database_path)
-    lexicon = Lexicon(config.lexicon_file)
+    lexicon = Lexicon(config.lexicon_file, config.lexicon_threshold)
 
     # Create and run bot
     bot = ScribesBot(config=config, db=db, lexicon=lexicon)

@@ -116,3 +116,14 @@ the model size hardcoded into the directory name. Two independent problems:
   2. Updated `test_get_queued_sessions` to explicitly set sessions to queued before testing (since sessions now start as recording).
   3. Updated `test_end_session` to also verify status becomes `STATUS_COMPLETE`.
 - **Impact**: Sessions now correctly show "Recording" in the UI immediately after creation. Ended sessions correctly show "Complete" rather than reverting to "Queued".
+
+### Bug #6: Lexicon fuzzy threshold from config is never used
+- **Files**: `shared/lexicon.py`, `bot/main.py`, `bot/delivery.py`
+- **Issue**: `Lexicon.correct()` hardcoded its fuzzy matching threshold at `max(len(key) // 2, 1)` (50% of key length). The `fuzzy_threshold` setting in `config.yaml` and the `lexicon_threshold` property on `Config` were silently ignored — the parameter existed in config but was never threaded through to the Lexicon class.
+- **Fix (shared/lexicon.py)**:
+  1. Added `fuzzy_threshold: float = 0.2` parameter to `Lexicon.__init__()` (default matches `_DEFAULTS`).
+  2. Clamped the value to `[0.0, 1.0]` and stored as `self._fuzzy_threshold`.
+  3. Updated `correct()` to use `max(int(len(key) * self._fuzzy_threshold), 1)` instead of `max(len(key) // 2, 1)`.
+- **Fix (bot/main.py)**: Changed `Lexicon(config.lexicon_file)` to `Lexicon(config.lexicon_file, config.lexicon_threshold)`.
+- **Fix (bot/delivery.py)**: Changed `Lexicon(lexicon_file)` to `Lexicon(lexicon_file, bot.config.lexicon_threshold)`.
+- **Impact**: The fuzzy correction threshold is now configurable via `config.yaml` (`lexicon.fuzzy_threshold`). Default value of `0.2` means corrections are only offered when the edit distance is within 20% of the key length — tighter than the old hardcoded 50%, reducing false-positive corrections.
