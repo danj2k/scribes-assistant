@@ -37,7 +37,7 @@ class TranscriptionWorker:
         device: Compute device (only "cpu" supported for Whisper).
     """
 
-    def __init__(self, model_path: str, num_threads: int = 2, device: str = "cpu"):
+    def __init__(self, model_path: str, num_threads: int = 0, device: str = "cpu"):
         self.model_path = model_path
         self.num_threads = num_threads
         self.device = device

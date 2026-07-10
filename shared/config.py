@@ -33,7 +33,7 @@ _DEFAULTS = {
     },
     "transcriber": {
         "poll_interval": 10,
-        "threads": 2,
+        "threads": 0,
         "model": "small",
         "model_dir": "/data/models",
     },
@@ -157,7 +157,7 @@ class Config:
     @property
     def num_threads(self) -> int:
         """Number of CPU threads for sherpa-onnx."""
-        return int(self.get("transcriber.threads", 2))
+        return int(self.get("transcriber.threads", 0))
 
     @property
     def model_size(self) -> str:
