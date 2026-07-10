@@ -7,6 +7,7 @@ transcription, and stores results for the bot's delivery loop.
 import sys
 import time
 import logging
+import logging.handlers
 import asyncio
 from pathlib import Path
 
@@ -19,9 +20,48 @@ from transcriber.worker import download_model, TranscriptionWorker
 
 logger = logging.getLogger("scribes.transcriber")
 
+
+def setup_logging(config: Config):
+    """Configure root logger with console (stdout) and rotating file handlers.
+
+    Console handler ensures docker logs captures all output. File handler
+    provides persistent logs at /data/logs/transcriber.log with rotation.
+    """
+    log_dir = Path("/data/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, config.log_level.upper(), logging.INFO))
+
+    # Avoid duplicate handlers on restart
+    if root_logger.handlers:
+        return
+
+    fmt = logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler — stdout for docker logs
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(fmt)
+    root_logger.addHandler(console)
+
+    # Rotating file handler — persistent logs
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "transcriber.log",
+        maxBytes=config.log_max_size_mb * 1024 * 1024,
+        backupCount=config.log_backup_count,
+    )
+    file_handler.setFormatter(fmt)
+    root_logger.addHandler(file_handler)
+
+
 def run_worker(config_path: str = "/app/config.yaml"):
     """Main worker loop — poll DB, transcribe, store transcript for delivery."""
     config = Config(config_path)
+    setup_logging(config)
+
     db = Database(config.database_path)
 
     # Download model if not present
