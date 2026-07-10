@@ -96,19 +96,41 @@ class TranscriptionWorker:
             return None
 
 
+# Module-level state for progress deduplication -- only log when something changes
+_last_log_pct: int = -1
+_last_log_mb: int = -1
+
+
+def _reset_progress_state() -> None:
+    """Reset deduplication state before a new download."""
+    global _last_log_pct, _last_log_mb
+    _last_log_pct = -1
+    _last_log_mb = -1
+
+
 def _progress_hook(block_num: int, block_size: int, total_size: int) -> None:
-    """Print download progress to stderr."""
+    """Log download progress, only when something changes.
+
+    Repeated calls with the same percentage or megabyte count are suppressed
+    to avoid flooding the logs.
+    """
+    global _last_log_pct, _last_log_mb
     downloaded = block_num * block_size
     if total_size > 0:
-        pct = min(100.0, downloaded / total_size * 100)
-        mb_downloaded = downloaded / (1024 * 1024)
-        mb_total = total_size / (1024 * 1024)
-        logger.info(
-            "Downloading model: %.1f%% (%.0f/%.0f MB)", pct, mb_downloaded, mb_total
-        )
+        pct = min(100, int(downloaded / total_size * 100))
+        mb_downloaded = int(downloaded / (1024 * 1024))
+        mb_total = int(total_size / (1024 * 1024))
+        if pct != _last_log_pct or mb_downloaded != _last_log_mb:
+            _last_log_pct = pct
+            _last_log_mb = mb_downloaded
+            logger.info(
+                "Downloading model: %d%% (%d/%d MB)", pct, mb_downloaded, mb_total
+            )
     else:
-        mb_downloaded = downloaded / (1024 * 1024)
-        logger.info("Downloading model: %.0f MB", mb_downloaded)
+        mb_downloaded = int(downloaded / (1024 * 1024))
+        if mb_downloaded != _last_log_mb:
+            _last_log_mb = mb_downloaded
+            logger.info("Downloading model: %d MB", mb_downloaded)
 
 
 def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
@@ -143,6 +165,7 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
             "asr-models/sherpa-onnx-whisper-small.tar.bz2"
         )
 
+    _reset_progress_state()
     logger.info("Downloading model from %s...", model_url)
 
     tar_path = model_path / "model.tar.bz2"
