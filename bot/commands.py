@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import os
 
 import discord
-from discord import app_commands
+from discord.commands import SlashCommandGroup, Option
 from discord.ext import commands
 
 from shared.database import (
@@ -47,7 +47,7 @@ def setup_commands(bot: commands.Bot):
     """Register all slash commands with the bot."""
 
     # --- /start ---
-    @bot.tree.command(name="start", description="Start recording your session")
+    @bot.slash_command(name="start", description="Start recording your session")
     async def start_command(interaction: discord.Interaction):
 
         # Permission check
@@ -116,7 +116,7 @@ def setup_commands(bot: commands.Bot):
         bot.logger.info(f"Session {session_id} started in channel #{interaction.channel}")
 
     # --- /stop ---
-    @bot.tree.command(name="stop", description="Stop recording and queue for transcription")
+    @bot.slash_command(name="stop", description="Stop recording and queue for transcription")
     async def stop_command(interaction: discord.Interaction):
 
         # Permission check
@@ -154,7 +154,7 @@ def setup_commands(bot: commands.Bot):
         bot.logger.info(f"Session {session_id} stopped and queued for transcription")
 
     # --- /status ---
-    @bot.tree.command(name="status", description="Check current session status")
+    @bot.slash_command(name="status", description="Check current session status")
     async def status_command(interaction: discord.Interaction):
 
         # Permission check
@@ -202,7 +202,7 @@ def setup_commands(bot: commands.Bot):
         )
 
     # --- /session ---
-    @bot.tree.command(name="session", description="List previous sessions")
+    @bot.slash_command(name="session", description="List previous sessions")
     async def session_command(interaction: discord.Interaction):
 
         # Permission check
@@ -237,7 +237,7 @@ def setup_commands(bot: commands.Bot):
         await interaction.response.send_message("\n".join(lines))
 
     # --- /invite ---
-    @bot.tree.command(name="invite", description="Get a link to invite the bot to another server")
+    @bot.slash_command(name="invite", description="Get a link to invite the bot to another server")
     async def invite_command(interaction: discord.Interaction):
         if not bot.user:
             return
@@ -255,7 +255,7 @@ def setup_commands(bot: commands.Bot):
         )
 
     # --- /help ---
-    @bot.tree.command(name="help", description="Show available commands")
+    @bot.slash_command(name="help", description="Show available commands")
     async def help_command(interaction: discord.Interaction):
         embed = discord.Embed(
             title="Scribe's Assistant — Commands",
@@ -281,11 +281,10 @@ def setup_commands(bot: commands.Bot):
         await interaction.response.send_message(embed=embed)
 
     # --- /lexicon ---
-    lexicon_group = app_commands.Group(name="lexicon", description="Manage the transcription lexicon")
+    lexicon_group = SlashCommandGroup(name="lexicon", description="Manage the transcription lexicon")
 
     @lexicon_group.command(name="add", description="Add a word to the transcription lexicon")
-    @app_commands.describe(term="The word to add", description="What this word means")
-    async def lexicon_add(interaction: discord.Interaction, term: str, description: str):
+    async def lexicon_add(interaction: discord.Interaction, term: Option(str, description="The word to add"), description: Option(str, description="What this word means")):
 
         # Permission check
         allowed, error = _check_permission(interaction, bot.config)
@@ -341,8 +340,7 @@ def setup_commands(bot: commands.Bot):
         await interaction.response.send_message("\n".join(lines))
 
     @lexicon_group.command(name="remove", description="Remove a word from the lexicon")
-    @app_commands.describe(term="The word to remove")
-    async def lexicon_remove(interaction: discord.Interaction, term: str):
+    async def lexicon_remove(interaction: discord.Interaction, term: Option(str, description="The word to remove")):
 
         # Permission check
         allowed, error = _check_permission(interaction, bot.config)
@@ -374,7 +372,7 @@ def setup_commands(bot: commands.Bot):
         )
         bot.logger.info(f"Lexicon: removed '{term}' by {interaction.user}")
 
-    bot.tree.add_command(lexicon_group)
+    bot.add_application_command(lexicon_group)
 
 
 def recording_finished_callback(bot, session_id, guild_id, channel_id):

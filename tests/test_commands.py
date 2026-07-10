@@ -11,8 +11,8 @@ import pytest
 # ---------------------------------------------------------------------------
 # Import _check_permission without polluting sys.modules for other test files.
 #
-# bot/commands.py imports discord, discord.app_commands, and discord.ext.commands.
-# discord.app_commands doesn't exist in the installed discord.py version, so we
+# bot/commands.py imports discord, discord.commands, and discord.ext.commands.
+# discord.commands (SlashCommandGroup, Option) may not be available in all environments, so we
 # must temporarily mock those sub-modules during import.  We save and restore
 # sys.modules so the mocks don't leak into test_error_handler.py (which imports
 # the real discord module).
@@ -26,7 +26,7 @@ for _key in list(sys.modules):
 
 # 2. Inject temporary mocks for the missing sub-modules.
 _mock_modules: dict[str, MagicMock] = {}
-for _mod_name in ("discord", "discord.ext", "discord.ext.commands", "discord.app_commands"):
+for _mod_name in ("discord", "discord.ext", "discord.ext.commands", "discord.commands"):
     if _mod_name not in sys.modules:
         _mock_modules[_mod_name] = MagicMock()
         sys.modules[_mod_name] = _mock_modules[_mod_name]

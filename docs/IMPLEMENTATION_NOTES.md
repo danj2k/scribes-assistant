@@ -90,3 +90,19 @@ Errors that cannot be reported to Discord (connection loss, crashes, model failu
 - **SQLite lock contention** — WAL mode allows concurrent reads. If a write fails due to a lock, retry with a short backoff (100ms, 3 attempts).
 - **Model not found** — if `/data/models/whisper-small/` is missing or corrupt, the transcriber logs an ERROR and exits. The bot remains functional but transcription will not proceed until the model is restored.
 - **Container crash** — Docker restarts the container automatically (`restart: unless-stopped`). The bot reconnects to Discord; the transcriber resumes polling.
+
+### py-cord Slash Command API (discord.commands vs discord.app_commands)
+
+py-cord 2.8.0 does NOT have a `discord.app_commands` module or `bot.tree`
+attribute. These are discord.py 2.0 features. py-cord uses its own
+`discord.commands` module instead:
+
+- Import `SlashCommandGroup` and `Option` from `discord.commands`
+- Use `@bot.slash_command(...)` instead of `@bot.tree.command(...)`
+- Use `Option(str, description=...)` type hints instead of `@app_commands.describe(...)`
+- Use `bot.add_application_command(...)` instead of `bot.tree.add_command(...)`
+- Use `await bot.sync_commands()` instead of `await bot.tree.sync()`
+
+If migrating code from discord.py to py-cord, search for all uses of
+`app_commands`, `bot.tree`, and `tree.command` — none of these exist
+in py-cord. See `bot/commands.py` for the corrected patterns.

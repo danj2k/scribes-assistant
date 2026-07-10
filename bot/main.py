@@ -47,8 +47,8 @@ class ScribesBot(commands.Bot):
 
         # Sync slash commands
         try:
-            synced = await self.tree.sync()
-            logger.info(f"Synced {len(synced)} slash command(s)")
+            await self.sync_commands()
+            logger.info("Synced slash commands")
         except Exception as e:
             logger.error(f"Failed to sync commands: {e}")
 
