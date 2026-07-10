@@ -1,12 +1,12 @@
-"""Lexicon helper — manages the YAML-based lexicon file and initial_prompt building.
+"""Lexicon helper — manages the YAML-based lexicon file and hotwords construction.
 
 The lexicon is a map of (lowercase term -> {term, description}) pairs stored as
 a simple "Term: Description" YAML-like file (one pair per line).  It's used to
-build an initial_prompt hint for the Whisper model so it better recognises
-fantasy names, locations, and jargon.
+build a hotwords string for the sherpa-onnx Whisper model so it better recognises
+fantasy names, locations, and jargon during transcription.
 
 A standalone Lexicon class handles load/save/add/remove/correct operations.
-The module also exposes build_initial_prompt() for Whisper prompt construction.
+The module also exposes build_hotwords() for sherpa-onnx hotwords construction.
 """
 
 from pathlib import Path
@@ -134,25 +134,24 @@ class Lexicon:
             return best_term
         return None
 
-    # -- Whisper prompt construction ----------------------------------------
+    # -- term list ----------------------------------------------------------
 
     def get_terms_list(self) -> list[str]:
-        """Return just the term strings for Whisper prompt injection."""
+        """Return just the term strings for hotwords injection."""
         return [entry["term"] for entry in self.terms.values()]
 
 
-def build_initial_prompt(terms: list[str]) -> str:
-    """Build a Whisper initial_prompt from lexicon terms.
+def build_hotwords(terms: list[str]) -> str:
+    """Build a sherpa-onnx hotwords string from lexicon terms.
 
-    Format: "This is a D&D session with fantasy terminology: Term1, Term2, ..."
-    The prompt is a plain-text hint, not a hard dictionary.  Kept within
-    token limits by capping at 30 terms.
+    Format: "Term1/Term2/Term3" — forward-slash separated list for
+    sherpa-onnx's create_stream(hotwords=...).  Hotwords are a hard
+    decoding bias (stronger than the old soft initial_prompt).
+
+    Capped at 100 terms to stay within sherpa-onnx token limits.
     """
     if not terms:
         return ""
 
-    # Cap to prevent token limit issues
-    capped = terms[:30]
-    term_list = ", ".join(capped)
-
-    return f"This is a D&D session with fantasy terminology: {term_list}"
+    # Cap to prevent token limit issues (100 hotwords limit in sherpa-onnx)
+    return "/".join(terms[:100])

@@ -1,7 +1,7 @@
 """Tests for shared.lexicon — D&D terminology auto-correction."""
 
 import pytest
-from shared.lexicon import Lexicon, build_initial_prompt
+from shared.lexicon import Lexicon, build_hotwords
 
 
 class TestLoadLexicon:
@@ -89,19 +89,18 @@ class TestAddRemoveTerm:
         lexicon.remove_term("nobody")  # Should not raise
 
 
-class TestBuildInitialPrompt:
-    """Tests for Whisper initial_prompt builder."""
+class TestBuildHotwords:
+    """Tests for the sherpa-onnx hotwords builder."""
 
-    def test_build_prompt(self):
-        """A prompt is built from a list of terms."""
-        prompt = build_initial_prompt(["Theron", "Grimjaw"])
-        assert "Theron" in prompt
-        assert "Grimjaw" in prompt
+    def test_build_hotwords(self):
+        """Hotwords are joined from a list of terms with forward slash."""
+        hotwords = build_hotwords(["Theron", "Grimjaw"])
+        assert hotwords == "Theron/Grimjaw"
 
-    def test_build_prompt_empty(self):
-        """An empty list returns an empty prompt."""
-        prompt = build_initial_prompt([])
-        assert prompt == ""
+    def test_build_hotwords_empty(self):
+        """An empty list returns an empty string."""
+        hotwords = build_hotwords([])
+        assert hotwords == ""
 
 
 class TestCorrectTieBreaking:

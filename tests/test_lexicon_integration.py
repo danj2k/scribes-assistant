@@ -1,52 +1,62 @@
-"""Tests for lexicon integration — initial prompt and post-correction."""
+"""Tests for lexicon integration — hotwords bias and post-correction."""
 import re
 from unittest.mock import MagicMock, patch, AsyncMock
-from shared.lexicon import Lexicon, build_initial_prompt
+from shared.lexicon import Lexicon, build_hotwords
 from shared.config import Config
 
 
-class TestTranscriptionWorkerPrompt:
-    """Test that initial_prompt is passed to sherpa-onnx config."""
+class TestTranscriptionWorkerHotwords:
+    """Test that hotwords are passed to create_stream()."""
 
-    def test_worker_accepts_initial_prompt(self):
+    def test_transcribe_passes_hotwords_to_create_stream(self):
+        """Hotwords string is forwarded to recognizer.create_stream()."""
         from transcriber.worker import TranscriptionWorker
-        w = TranscriptionWorker(
-            "/tmp/model", num_threads=2,
-            initial_prompt="This is a D&D session: Theron, Grimjaw"
-        )
-        assert w.initial_prompt == "This is a D&D session: Theron, Grimjaw"
-
-    def test_worker_default_prompt_empty(self):
-        from transcriber.worker import TranscriptionWorker
-        w = TranscriptionWorker("/tmp/model")
-        assert w.initial_prompt == ""
-
-    def test_load_model_sets_prompt(self):
-        from transcriber.worker import TranscriptionWorker
-        with patch("transcriber.worker.sherpa_onnx") as mock_sherpa:
-            mock_config = MagicMock()
-            mock_sherpa.OfflineRecognizerConfig.return_value = mock_config
-
-            w = TranscriptionWorker(
-                "/tmp/model", initial_prompt="Theron, Grimjaw"
-            )
-            w.load_model()
-
-            assert mock_config.model_config.transducer.initial_prompt == "Theron, Grimjaw"
-
-    def test_load_model_no_prompt_omits_config(self):
-        from transcriber.worker import TranscriptionWorker
-        with patch("transcriber.worker.sherpa_onnx") as mock_sherpa:
-            mock_config = MagicMock()
-            mock_sherpa.OfflineRecognizerConfig.return_value = mock_config
+        with patch("transcriber.worker.sf") as mock_sf, \
+             patch.object(TranscriptionWorker, "load_model"):
+            mock_audio = MagicMock()
+            mock_audio.shape = (16000,)
+            mock_sf.read.return_value = (mock_audio, 16000)
 
             w = TranscriptionWorker("/tmp/model")
-            w.load_model()
+            w.recognizer = MagicMock()
 
-            # Should not have set initial_prompt when empty
-            # The mock config's transducer attr was not explicitly set
-            # Just verify the recognizer was created
-            mock_sherpa.OfflineRecognizer.assert_called_once_with(mock_config)
+            w.transcribe("/tmp/test.wav", hotwords="Theron/Grimjaw")
+
+            w.recognizer.create_stream.assert_called_once_with(
+                hotwords="Theron/Grimjaw"
+            )
+
+    def test_transcribe_no_hotwords_when_none(self):
+        """create_stream called without hotwords when none provided."""
+        from transcriber.worker import TranscriptionWorker
+        with patch("transcriber.worker.sf") as mock_sf, \
+             patch.object(TranscriptionWorker, "load_model"):
+            mock_audio = MagicMock()
+            mock_audio.shape = (16000,)
+            mock_sf.read.return_value = (mock_audio, 16000)
+
+            w = TranscriptionWorker("/tmp/model")
+            w.recognizer = MagicMock()
+
+            w.transcribe("/tmp/test.wav")
+
+            w.recognizer.create_stream.assert_called_once_with(hotwords=None)
+
+    def test_transcribe_no_hotwords_when_empty_string(self):
+        """create_stream called with empty hotwords string."""
+        from transcriber.worker import TranscriptionWorker
+        with patch("transcriber.worker.sf") as mock_sf, \
+             patch.object(TranscriptionWorker, "load_model"):
+            mock_audio = MagicMock()
+            mock_audio.shape = (16000,)
+            mock_sf.read.return_value = (mock_audio, 16000)
+
+            w = TranscriptionWorker("/tmp/model")
+            w.recognizer = MagicMock()
+
+            w.transcribe("/tmp/test.wav", hotwords="")
+
+            w.recognizer.create_stream.assert_called_once_with(hotwords="")
 
 
 class TestDeliveryLoopLexicon:
@@ -136,24 +146,29 @@ class TestDeliveryLoopLexicon:
         assert result == text
 
 
-class TestBuildInitialPrompt:
-    """Test the prompt builder used by the bot."""
+class TestBuildHotwords:
+    """Test the hotwords builder used by the transcriber."""
 
     def test_builds_correct_format(self):
+        """Hotwords are joined with forward slashes for sherpa-onnx."""
         terms = ["Theron", "Grimjaw", "Aboleth"]
-        prompt = build_initial_prompt(terms)
-        assert "Theron" in prompt
-        assert "Grimjaw" in prompt
-        assert "Aboleth" in prompt
-        assert prompt.startswith("This is a D&D session")
+        hotwords = build_hotwords(terms)
+        assert hotwords == "Theron/Grimjaw/Aboleth"
 
-    def test_caps_at_30_terms(self):
-        terms = [f"Term{i}" for i in range(50)]
-        prompt = build_initial_prompt(terms)
-        # Should only contain 30 terms
-        assert "Term29" in prompt
-        assert "Term30" not in prompt
+    def test_empty_terms_returns_empty(self):
+        """Empty list returns empty string."""
+        assert build_hotwords([]) == ""
 
-    def test_empty_terms(self):
-        prompt = build_initial_prompt([])
-        assert prompt == ""
+    def test_single_term(self):
+        """Single term has no trailing slash."""
+        assert build_hotwords(["Theron"]) == "Theron"
+
+    def test_caps_at_100_terms(self):
+        """Hotwords capped at 100 to stay within sherpa-onnx limits."""
+        terms = [f"Term{i}" for i in range(150)]
+        hotwords = build_hotwords(terms)
+        # Should contain 100 terms, not 150
+        parts = hotwords.split("/")
+        assert len(parts) == 100
+        assert parts[99] == "Term99"
+        assert "Term100" not in hotwords

@@ -59,8 +59,14 @@ class TranscriptionWorker:
             logger.error("Failed to load model: %s", e)
             raise
 
-    def transcribe(self, audio_path: str) -> Optional[str]:
-        """Transcribe an audio file. Returns text or None on error."""
+    def transcribe(self, audio_path: str, hotwords: Optional[str] = None) -> Optional[str]:
+        """Transcribe an audio file. Returns text or None on error.
+
+        Args:
+            audio_path: Path to the WAV file to transcribe.
+            hotwords: Optional sherpa-onnx hotwords string ("Term1/Term2").
+                      Applies a hard decoding bias for phonetic matches.
+        """
         if not self.recognizer:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
@@ -70,7 +76,7 @@ class TranscriptionWorker:
             if len(audio.shape) > 1:
                 audio = audio.mean(axis=1)
 
-            stream = self.recognizer.create_stream()
+            stream = self.recognizer.create_stream(hotwords=hotwords)
             stream.accept_waveform(sample_rate, audio.tolist())
             self.recognizer.decode_stream(stream)
 

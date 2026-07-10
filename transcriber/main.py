@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from shared.config import Config, load_config
 from shared.database import Database
+from shared.lexicon import Lexicon, build_hotwords
 from transcriber.worker import download_model, TranscriptionWorker
 
 logger = logging.getLogger("scribes.transcriber")
@@ -64,6 +65,19 @@ def run_worker(config_path: str = "/app/config.yaml"):
 
     db = Database(config.database_path)
 
+    # Load lexicon for hotwords
+    hotwords = ""
+    if config.lexicon_enabled:
+        try:
+            lexicon = Lexicon(config.lexicon_file, config.lexicon_threshold)
+            terms = lexicon.get_terms_list()
+            hotwords = build_hotwords(terms)
+            logger.info(
+                "Loaded %d lexicon terms for hotwords bias", len(terms)
+            )
+        except Exception as e:
+            logger.warning("Could not load lexicon, hotwords disabled: %s", e)
+
     # Download model if not present
     download_model(config.model_path)
 
@@ -92,7 +106,7 @@ def run_worker(config_path: str = "/app/config.yaml"):
 
             # Run transcription
             try:
-                text = worker.transcribe(filepath)
+                text = worker.transcribe(filepath, hotwords=hotwords)
                 if text is None:
                     raise RuntimeError('Transcription returned None')
 

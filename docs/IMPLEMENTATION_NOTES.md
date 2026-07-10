@@ -18,8 +18,8 @@ sherpa-onnx expects 16kHz mono WAV input. py-cord delivers audio at Discord's na
 
 The lexicon improves transcription quality through two independent mechanisms:
 
-**Stage 1: Initial prompt injection (before transcription)**
-The lexicon terms are formatted by `build_initial_prompt()` into a text hint: "This is a D&D session with fantasy terminology: Term1, Term2, ...". This is passed to sherpa-onnx via `config.model_config.transducer.initial_prompt`. The prompt primes the Whisper decoder to recognise custom vocabulary. Capped at 30 terms to stay within token limits.
+**Stage 1: Hotwords bias (before transcription)**
+The lexicon terms are formatted by `build_hotwords()` into a forward-slash separated string: `"Term1/Term2/Term3"`. This is passed to sherpa-onnx via `create_stream(hotwords=...)`. Hotwords are a hard decoding bias — the model is strongly biased toward recognising these terms during transcription. Capped at 100 terms to stay within sherpa-onnx token limits.
 
 **Stage 2: Fuzzy post-correction (after transcription)**
 When the transcript is delivered, `DeliveryLoop._correct_text()` applies Levenshtein-based fuzzy matching to every word. Each word is checked against the lexicon — if a close match exists (within 50% of the word's length), it's corrected to the canonical form. This catches misrecognitions that the initial prompt didn't prevent.
