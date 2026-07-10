@@ -18,6 +18,8 @@ RUN cd /app/shared && pip install --no-cache-dir -e .
 
 # Copy transcriber code
 COPY transcriber/ /app/transcriber/
+# Copy scripts (model download, etc.)
+COPY scripts/ /app/transcriber/scripts/
 
 # Install transcriber dependencies
 RUN cd /app/transcriber && pip install --no-cache-dir -r requirements.txt
