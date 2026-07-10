@@ -53,6 +53,16 @@ sherpa-onnx model weights (~500MB for whisper-small) are stored in a Docker volu
 
 A standalone download script (`scripts/download_model.py`) handles the download with progress reporting. It can be run via `docker compose exec transcriber python scripts/download_model.py`. The script is idempotent — skips download if all required files already exist. The transcriber's main loop also calls `download_model()` as a fallback on startup.
 
+### SHA-256 Model Verification
+Downloaded model archives are verified with SHA-256 before extraction. The expected hash is hardcoded as `EXPECTED_SHA256` in `transcriber/worker.py` and must be updated manually when the model version changes.
+
+Verification flow: download, then hash check, then extract. On mismatch, the bad archive is deleted and a `RuntimeError` is raised. This prevents corrupted or tampered archives from being extracted into the model directory.
+
+The `_sha256_file()` helper reads in 8KB chunks to handle large files without excessive memory use. Progress reporting is deduplicated — logs only fire when the percentage or megabyte count changes, avoiding log spam on slow connections.
+
+To update the expected hash after a model upgrade, run `_sha256_file()` against the new archive and update `EXPECTED_SHA256` in `transcriber/worker.py`.
+
+
 ### Transcript Delivery
 
 Discord has a file size limit (8MB for free servers). Most D&D sessions (3-4 hours) should produce transcripts well under this limit. If a transcript exceeds it, split into multiple parts or compress.

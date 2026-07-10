@@ -4,6 +4,7 @@ Handles model loading and audio file transcription.
 """
 
 import os
+import hashlib
 import tarfile
 import time
 import logging
@@ -96,6 +97,9 @@ class TranscriptionWorker:
             return None
 
 
+# Expected SHA-256 hash for the model archive
+EXPECTED_SHA256 = "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6"
+
 # Module-level state for progress deduplication -- only log when something changes
 _last_log_pct: int = -1
 _last_log_mb: int = -1
@@ -106,6 +110,15 @@ def _reset_progress_state() -> None:
     global _last_log_pct, _last_log_mb
     _last_log_pct = -1
     _last_log_mb = -1
+
+
+def _sha256_file(path: Path) -> str:
+    """Compute SHA-256 hash of a file, reading in chunks to handle large files."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _progress_hook(block_num: int, block_size: int, total_size: int) -> None:
@@ -176,6 +189,19 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
         if tar_path.exists():
             tar_path.unlink()
         raise RuntimeError(f"Model download failed: {e}") from e
+
+    # Verify SHA-256 hash
+    logger.info("Verifying SHA-256 hash...")
+    actual_hash = _sha256_file(tar_path)
+    if actual_hash != EXPECTED_SHA256:
+        tar_path.unlink()
+        raise RuntimeError(
+            f"SHA-256 verification failed!"
+            f" Expected: {EXPECTED_SHA256}"
+            f" Got: {actual_hash}"
+            f" The downloaded file may be corrupted or tampered with."
+        )
+    logger.info("Hash verified: %s...", actual_hash[:16])
 
     # Extract
     try:

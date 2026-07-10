@@ -1,6 +1,7 @@
-from pathlib import Path
 """Tests for transcriber.worker — TranscriptionWorker with mocked sherpa-onnx."""
 
+from pathlib import Path
+from transcriber.worker import _sha256_file, EXPECTED_SHA256
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -70,9 +71,10 @@ class TestWorkerTranscribe:
 class TestDownloadModel:
     """Tests for the download_model helper."""
 
+    @patch("transcriber.worker._sha256_file", return_value=EXPECTED_SHA256)
     @patch("transcriber.worker.tarfile")
     @patch("transcriber.worker.urllib")
-    def test_download_model_creates_dir(self, mock_urllib, mock_tarfile, tmp_path):
+    def test_download_model_creates_dir(self, mock_urllib, mock_tarfile, mock_sha256, tmp_path):
         """download_model creates the model directory."""
         from transcriber.worker import download_model
 
@@ -91,6 +93,94 @@ class TestDownloadModel:
 
         assert tmp_path.joinpath("models").is_dir()
 
+
+
+class TestSha256Verification:
+    """Tests for SHA-256 hash verification in transcriber download_model()."""
+
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    def test_sha256_file_returns_hash(self, mock_urllib, mock_tarfile, tmp_path):
+        """_sha256_file should return correct SHA-256 hex digest."""
+        test_file = tmp_path / "test.bin"
+        test_file.write_bytes(b"hello world")
+        result = _sha256_file(test_file)
+        # SHA-256 of "hello world" is well-known
+        assert result == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    def test_hash_mismatch_raises_runtime_error(self, mock_urllib, mock_tarfile, tmp_path):
+        """Should raise RuntimeError when downloaded file hash doesn't match."""
+        from transcriber.worker import download_model
+
+        def fake_urlretrieve(url, path, reporthook=None):
+            # Write data that won't match the expected hash
+            Path(path).write_bytes(b"corrupt or tampered data")
+
+        mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        model_dir = str(tmp_path / "models")
+        with pytest.raises(RuntimeError, match="SHA-256 verification failed"):
+            download_model(model_dir, model_url="http://example.com/model.tar.bz2")
+
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    def test_hash_mismatch_deletes_bad_file(self, mock_urllib, mock_tarfile, tmp_path):
+        """Should delete the downloaded file when hash doesn't match."""
+        from transcriber.worker import download_model
+
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"bad data")
+
+        mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        model_dir = str(tmp_path / "models")
+        with pytest.raises(RuntimeError):
+            download_model(model_dir, model_url="http://example.com/model.tar.bz2")
+
+        # Verify bad archive was deleted
+        archive = Path(model_dir) / "model.tar.bz2"
+        assert not archive.exists(), "Bad archive should be deleted after hash mismatch"
+
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    @patch("transcriber.worker._sha256_file")
+    def test_hash_match_proceeds_to_extraction(self, mock_sha256, mock_urllib, mock_tarfile, tmp_path):
+        """Should proceed to extraction when hash matches."""
+        from transcriber.worker import download_model, EXPECTED_SHA256
+        mock_sha256.return_value = EXPECTED_SHA256
+
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extractall(path):
+            files = ["encoder-epoch-99-avg-1.onnx", "decoder-epoch-99-avg-1.onnx", "joiner-epoch-99-avg-1.onnx"]
+            for f in files:
+                (Path(path) / f).write_bytes(b"fake model data")
+
+        mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_tar.extractall.side_effect = fake_extractall
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        model_dir = str(tmp_path / "models")
+        result = download_model(model_dir, model_url="http://example.com/model.tar.bz2")
+        assert result == model_dir
+
+    def test_expected_sha256_is_nonempty_string(self):
+        """EXPECTED_SHA256 should be a 64-character hex string."""
+        assert isinstance(EXPECTED_SHA256, str)
+        assert len(EXPECTED_SHA256) == 64
+        # All characters should be valid hex
+        int(EXPECTED_SHA256, 16)
 
 class TestProgressHookDedup:
     """Tests for _progress_hook log deduplication."""

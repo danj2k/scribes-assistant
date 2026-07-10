@@ -13,7 +13,7 @@ import pytest
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.download_model import download_model, main, REQUIRED_FILES, _progress_hook
+from scripts.download_model import download_model, main, REQUIRED_FILES, _progress_hook, _sha256_file, EXPECTED_SHA256
 
 
 @pytest.fixture
@@ -47,10 +47,11 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                mock_tar = MagicMock()
-                mock_open.return_value.__enter__ = lambda s: mock_tar
-                mock_open.return_value.__exit__ = MagicMock(return_value=False)
-                result = download_model(tmp_model_dir, force=True)
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_tar = MagicMock()
+                    mock_open.return_value.__enter__ = lambda s: mock_tar
+                    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                    result = download_model(tmp_model_dir, force=True)
 
         assert result == tmp_model_dir
 
@@ -65,11 +66,12 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                mock_tar = MagicMock()
-                mock_tar.extractall.side_effect = fake_extractall
-                mock_open.return_value.__enter__ = lambda s: mock_tar
-                mock_open.return_value.__exit__ = MagicMock(return_value=False)
-                result = download_model(tmp_model_dir)
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_tar = MagicMock()
+                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_open.return_value.__enter__ = lambda s: mock_tar
+                    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                    result = download_model(tmp_model_dir)
 
         assert result == tmp_model_dir
         for f in REQUIRED_FILES:
@@ -91,9 +93,10 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                mock_open.side_effect = Exception("bad archive")
-                with pytest.raises(RuntimeError, match="Extraction failed"):
-                    download_model(tmp_model_dir)
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_open.side_effect = Exception("bad archive")
+                    with pytest.raises(RuntimeError, match="Extraction failed"):
+                        download_model(tmp_model_dir)
 
     def test_missing_files_after_extraction(self, tmp_model_dir):
         """Should raise FileNotFoundError if required files are missing."""
@@ -106,12 +109,13 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                mock_tar = MagicMock()
-                mock_tar.extractall.side_effect = fake_extractall
-                mock_open.return_value.__enter__ = lambda s: mock_tar
-                mock_open.return_value.__exit__ = MagicMock(return_value=False)
-                with pytest.raises(FileNotFoundError, match="missing"):
-                    download_model(tmp_model_dir)
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_tar = MagicMock()
+                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_open.return_value.__enter__ = lambda s: mock_tar
+                    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                    with pytest.raises(FileNotFoundError, match="missing"):
+                        download_model(tmp_model_dir)
 
     def test_creates_model_directory(self, tmp_model_dir):
         """Should create the model directory if it doesn't exist."""
@@ -135,11 +139,12 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                mock_tar = MagicMock()
-                mock_tar.extractall.side_effect = fake_extractall
-                mock_open.return_value.__enter__ = lambda s: mock_tar
-                mock_open.return_value.__exit__ = MagicMock(return_value=False)
-                download_model(tmp_model_dir)
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_tar = MagicMock()
+                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_open.return_value.__enter__ = lambda s: mock_tar
+                    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                    download_model(tmp_model_dir)
 
         assert not (Path(tmp_model_dir) / "model.tar.bz2").exists()
 
@@ -150,12 +155,71 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                mock_open.side_effect = Exception("bad archive")
-                with pytest.raises(RuntimeError):
-                    download_model(tmp_model_dir)
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_open.side_effect = Exception("bad archive")
+                    with pytest.raises(RuntimeError):
+                        download_model(tmp_model_dir)
 
         assert not (Path(tmp_model_dir) / "model.tar.bz2").exists()
 
+
+
+class TestSha256Verification:
+    """Tests for SHA-256 hash verification in download_model()."""
+
+    def test_sha256_file_returns_hash(self, tmp_model_dir):
+        """_sha256_file should return the SHA-256 hex digest of a file."""
+        test_file = Path(tmp_model_dir) / "test.bin"
+        test_file.write_bytes(b"hello world")
+        result = _sha256_file(test_file)
+        assert result == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+
+    def test_hash_mismatch_raises_runtime_error(self, tmp_model_dir):
+        """Should raise RuntimeError when downloaded file hash doesn't match expected."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"corrupt or tampered data")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with pytest.raises(RuntimeError, match="SHA-256 verification failed"):
+                download_model(tmp_model_dir)
+
+    def test_hash_mismatch_deletes_bad_file(self, tmp_model_dir):
+        """Should delete the downloaded file when hash doesn't match."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"bad data")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with pytest.raises(RuntimeError):
+                download_model(tmp_model_dir)
+
+        archive = Path(tmp_model_dir) / "model.tar.bz2"
+        assert not archive.exists(), "Bad archive should be deleted after hash mismatch"
+
+    def test_hash_match_proceeds_to_extraction(self, tmp_model_dir):
+        """Should proceed to extraction when hash matches."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extractall(path):
+            for f in REQUIRED_FILES:
+                (Path(tmp_model_dir) / f).write_bytes(b"extracted")
+
+        with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with patch("scripts.download_model.tarfile.open") as mock_open:
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                    mock_tar = MagicMock()
+                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_open.return_value.__enter__ = lambda s: mock_tar
+                    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                    result = download_model(tmp_model_dir)
+
+        assert result == tmp_model_dir
+
+    def test_expected_sha256_is_nonempty_string(self):
+        """EXPECTED_SHA256 should be a 64-character hex string."""
+        assert isinstance(EXPECTED_SHA256, str)
+        assert len(EXPECTED_SHA256) == 64
+        int(EXPECTED_SHA256, 16)
 
 class TestProgressHook:
     """Tests for _progress_hook()."""
