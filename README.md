@@ -26,13 +26,14 @@ The setup involves two roles — the **bot administrator** (you) who runs the in
 The bot needs to be invited to your Discord server with the correct permissions. This step requires the **Manage Server** permission on the target Discord server.
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), select your bot application, and navigate to **OAuth2** > **URL Generator**.
-2. Under **Scopes**, select `bot`.
+2. Under **Scopes**, select `bot` **and** `applications.commands`.
+   - `bot` — grants the bot access to your server.
+   - `applications.commands` — allows the bot to register and use slash commands. Without this scope, none of the bot's commands will appear in Discord.
 3. Under **Bot Permissions**, select the following:
    - Send Messages
    - Create Public Threads
    - Attach Files
    - Use Voice Activity
-   - Application Commands
 4. Copy the generated URL at the bottom of the page and open it in your browser.
 5. Select the server you want to add the bot to and authorise it.
 
