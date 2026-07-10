@@ -185,7 +185,7 @@ class Database:
 
     # -- transcript storage --------------------------------------------------
 
-    def add_transcript(self, file_id: int, channel_id: str, text: str):
+    def add_transcript(self, file_id: int, text: str):
         """Store the transcribed text for a completed audio file."""
         with self._cursor() as cur:
             cur.execute(

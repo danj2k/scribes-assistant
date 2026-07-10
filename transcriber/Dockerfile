@@ -14,7 +14,7 @@ WORKDIR /app
 COPY shared/ /app/shared/
 
 # Install shared package
-RUN cd /app/shared && pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir /app/shared
 
 # Copy transcriber code
 COPY transcriber/ /app/transcriber/
@@ -25,7 +25,6 @@ COPY scripts/ /app/transcriber/scripts/
 RUN cd /app/transcriber && pip install --no-cache-dir -r requirements.txt
 
 # Create data directories for model and recordings
-RUN mkdir -p /app/data/models/whisper-small \
     && mkdir -p /app/data/recordings \
     && mkdir -p /app/data/transcripts \
     && mkdir -p /app/data/logs
