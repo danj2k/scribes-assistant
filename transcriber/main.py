@@ -31,7 +31,6 @@ def run_worker(config_path: str = "/app/config.yaml"):
     worker = TranscriptionWorker(
         model_path=config.model_path,
         num_threads=config.num_threads,
-        sample_rate=config.sample_rate,
     )
     worker.load_model()
 
