@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # Discord bot service — connects to Discord, captures voice, delivers transcripts
   bot:
