@@ -23,6 +23,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 
 **Key dependencies:**
 - py-cord 2.8.0 (Discord API, voice receive)
+- PyNaCl (voice encryption, required by py-cord for voice support)
 - SQLite3 (session/queue management)
 - ffmpeg (audio processing, WAV handling)
 
@@ -131,6 +132,7 @@ Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 
 ## Dependencies
 
 - **py-cord 2.8.0** — Discord bot framework with voice receive support
+- **PyNaCl** — Required by py-cord for voice channel encryption
 - **sherpa-onnx** — Fast, CPU-optimised speech-to-text with Python bindings
 - **ffmpeg** — Audio format conversion and processing
 - **SQLite** — Lightweight, file-based database for queue coordination

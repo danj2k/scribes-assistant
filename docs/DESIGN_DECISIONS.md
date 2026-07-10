@@ -141,7 +141,7 @@ GitHub organisation has continued active development and released 2.8.0
 (May 2026) with Python 3.14 support, DAVE E2EE for voice, and ongoing
 bug fixes. This is the current stable release.
 
-**Impact**: Install via `py-cord>=2.8.0`. Voice receive is compatible with
+**Impact**: Install via `py-cord>=2.8.0`. Also requires `PyNaCl` for voice encryption. Voice receive is compatible with
 the original design. Note that py-cord uses its own slash command API
 
 ---
