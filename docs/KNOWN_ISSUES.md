@@ -8,7 +8,7 @@
 
 ## Technical Debt
 
-- **No transcript_channel_id implementation**: The config example documents discord.transcript_channel_id but it has no backing in _DEFAULTS or the Config class — it is a no-op.
+- *(None — all known issues have been addressed)*
 
 ## Future Considerations
 

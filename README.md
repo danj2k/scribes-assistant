@@ -163,6 +163,7 @@ Settings are defined in `config.yaml` (see `config.yaml.example` for all options
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `discord.guild_id` | `""` (empty) | Numeric [Snowflake ID](https://discord.com/developers/docs/reference#snowflakes) of the server to restrict the bot to (empty = any server). See [Obtaining your Server ID](#obtaining-your-server-id). |
+| `discord.transcript_channel_id` | `""` (empty) | Channel ID where transcripts are delivered (empty = channel where /start was issued). Set to collect all transcripts in one dedicated channel. |
 | `discord.permissions.restrict_commands` | `false` | Restrict command usage to specific roles |
 | `discord.permissions.allowed_roles` | `[]` | Roles permitted when restrictions are enabled |
 | `lexicon.enabled` | `true` | Enable/disable lexicon features |

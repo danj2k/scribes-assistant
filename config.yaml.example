@@ -9,6 +9,11 @@ discord:
   # https://discord.com/developers/docs/reference#snowflakes
   guild_id: ""
 
+  # Numeric channel ID where transcripts are delivered
+  # Leave empty to deliver transcripts to the channel where /start was issued
+  # Set to a specific channel ID to collect all transcripts in one place
+  transcript_channel_id: ""
+
   # Command permissions
   permissions:
     # Restrict command usage to specific roles (default: false = everyone can use)

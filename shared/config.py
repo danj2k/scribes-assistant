@@ -11,6 +11,7 @@ import yaml
 _DEFAULTS = {
     "discord": {
         "guild_id": "",
+        "transcript_channel_id": "",
         "permissions": {
             "restrict_commands": False,
             "allowed_roles": [],
@@ -101,6 +102,12 @@ class Config:
     def guild_id(self) -> int:
         """Return the Discord guild ID as an integer."""
         raw = self.get("discord.guild_id", "0")
+        return int(raw) if raw else 0
+
+    @property
+    def transcript_channel_id(self) -> int:
+        """Return the transcript delivery channel ID as an integer, or 0 if not set."""
+        raw = self.get("discord.transcript_channel_id", "")
         return int(raw) if raw else 0
 
     @property

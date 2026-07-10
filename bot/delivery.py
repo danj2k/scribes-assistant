@@ -99,10 +99,21 @@ class DeliveryLoop:
         return re.sub(r"\b\w+\b", _replace_word, text)
 
     async def _deliver(self, session: dict):
-        """Deliver a single transcript to its Discord channel."""
+        """Deliver a single transcript to its Discord channel.
+
+        If discord.transcript_channel_id is configured, all transcripts are
+        delivered there. Otherwise they go to the channel where the session
+        was started.
+        """
         session_id = session["id"]
-        channel_id = int(session["discord_channel_id"])
         transcript_path = session["transcript_path"]
+
+        # Use the configured transcript channel if set, otherwise the session's channel
+        config_channel_id = self.bot.config.transcript_channel_id
+        if config_channel_id:
+            channel_id = config_channel_id
+        else:
+            channel_id = int(session["discord_channel_id"])
         
         channel = self.bot.get_channel(channel_id)
         if not channel:
