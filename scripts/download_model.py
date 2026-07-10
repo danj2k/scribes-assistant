@@ -29,15 +29,15 @@ DEFAULT_MODEL_URL = (
 # Expected SHA-256 hash for the model archive
 EXPECTED_SHA256 = "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6"
 
-# Files that must exist after extraction
+# Files that must exist after extraction (Whisper architecture)
 REQUIRED_FILES = [
-    "encoder-epoch-99-avg-1.onnx",
-    "decoder-epoch-99-avg-1.onnx",
-    "joiner-epoch-99-avg-1.onnx",
+    "small-encoder.onnx",
+    "small-decoder.onnx",
+    "small-tokens.txt",
 ]
 
 # Expected size in bytes for progress display (approximate)
-ARCHIVE_SIZE_MB = 630
+ARCHIVE_SIZE_MB = 609
 
 
 def _progress_hook(block_num: int, block_size: int, total_size: int) -> None:
@@ -133,7 +133,12 @@ def download_model(
     print("  Extracting archive...")
     try:
         with tarfile.open(archive_path, "r:bz2") as tar:
-            tar.extractall(model_path)
+            for member in tar.getmembers():
+                # Strip the top-level directory name if present
+                parts = member.name.split("/", 1)
+                if len(parts) > 1:
+                    member.name = parts[1]
+                tar.extract(member, model_path)
     except Exception as e:
         raise RuntimeError(f"Extraction failed: {e}") from e
     finally:

@@ -35,37 +35,25 @@ class TranscriptionWorker:
         model_path: Path to the sherpa-onnx model directory.
         num_threads: CPU threads for sherpa-onnx.
         device: Compute device (only "cpu" supported for Whisper).
-        initial_prompt: Optional text hint for Whisper (lexicon terms).
-            Injected into the decoder to improve recognition of custom vocabulary.
     """
 
-    def __init__(self, model_path: str, num_threads: int = 2, device: str = "cpu",
-                 initial_prompt: str = ""):
+    def __init__(self, model_path: str, num_threads: int = 2, device: str = "cpu"):
         self.model_path = model_path
         self.num_threads = num_threads
         self.device = device
-        self.initial_prompt = initial_prompt
         self.recognizer = None
 
     def load_model(self):
-        """Load the sherpa-onnx model. Call once at startup."""
+        """Load the sherpa-onnx Whisper model. Call once at startup."""
         try:
-            config = sherpa_onnx.OfflineRecognizerConfig()
-            config.model_config.transducer.encoder = os.path.join(
-                self.model_path, "encoder-epoch-99-avg-1.onnx"
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
+                encoder=os.path.join(self.model_path, "small-encoder.onnx"),
+                decoder=os.path.join(self.model_path, "small-decoder.onnx"),
+                tokens=os.path.join(self.model_path, "small-tokens.txt"),
+                num_threads=self.num_threads,
+                decoding_method="greedy_search",
             )
-            config.model_config.transducer.decoder = os.path.join(
-                self.model_path, "decoder-epoch-99-avg-1.onnx"
-            )
-            config.model_config.transducer.joiner = os.path.join(
-                self.model_path, "joiner-epoch-99-avg-1.onnx"
-            )
-            config.model_config.num_threads = self.num_threads
-            if self.initial_prompt:
-                config.model_config.transducer.initial_prompt = self.initial_prompt
-
-            self.recognizer = sherpa_onnx.OfflineRecognizer(config)
-            logger.info("Loaded sherpa-onnx model from %s", self.model_path)
+            logger.info("Loaded sherpa-onnx Whisper model from %s", self.model_path)
 
         except Exception as e:
             logger.error("Failed to load model: %s", e)
@@ -161,9 +149,9 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
 
     # Check if model already exists
     required_files = [
-        "encoder-epoch-99-avg-1.onnx",
-        "decoder-epoch-99-avg-1.onnx",
-        "joiner-epoch-99-avg-1.onnx",
+        "small-encoder.onnx",
+        "small-decoder.onnx",
+        "small-tokens.txt",
     ]
 
     all_exist = all((model_path / f).exists() for f in required_files)
@@ -206,7 +194,12 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
     # Extract
     try:
         with tarfile.open(tar_path, "r:bz2") as tar:
-            tar.extractall(model_path)
+            for member in tar.getmembers():
+                # Strip the top-level directory name if present
+                parts = member.name.split("/", 1)
+                if len(parts) > 1:
+                    member.name = parts[1]
+                tar.extract(member, model_path)
     except Exception as e:
         raise RuntimeError(f"Model extraction failed: {e}") from e
     finally:

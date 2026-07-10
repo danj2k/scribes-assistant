@@ -37,7 +37,7 @@ class TestWorkerTranscribe:
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
-        mock_sherpa.OfflineRecognizer.return_value = mock_recognizer
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
 
         mock_stream = MagicMock()
@@ -57,7 +57,7 @@ class TestWorkerTranscribe:
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
-        mock_sherpa.OfflineRecognizer.return_value = mock_recognizer
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
 
         mock_stream = MagicMock()
@@ -78,13 +78,16 @@ class TestDownloadModel:
         """download_model creates the model directory."""
         from transcriber.worker import download_model
 
-        def fake_extractall(path):
-            files = ["encoder-epoch-99-avg-1.onnx", "decoder-epoch-99-avg-1.onnx", "joiner-epoch-99-avg-1.onnx"]
-            for f in files:
-                (Path(path) / f).write_bytes(b"fake model data")
+        def fake_extract(member, path):
+            (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_tar = MagicMock()
-        mock_tar.extractall.side_effect = fake_extractall
+        mock_members = [MagicMock() for _ in range(3)]
+        mock_members[0].name = "sherpa-onnx-whisper-small/small-encoder.onnx"
+        mock_members[1].name = "sherpa-onnx-whisper-small/small-decoder.onnx"
+        mock_members[2].name = "sherpa-onnx-whisper-small/small-tokens.txt"
+        mock_tar.getmembers.return_value = mock_members
+        mock_tar.extract.side_effect = fake_extract
         mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
         mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -160,14 +163,17 @@ class TestSha256Verification:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extractall(path):
-            files = ["encoder-epoch-99-avg-1.onnx", "decoder-epoch-99-avg-1.onnx", "joiner-epoch-99-avg-1.onnx"]
-            for f in files:
-                (Path(path) / f).write_bytes(b"fake model data")
+        def fake_extract(member, path):
+            (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
         mock_tar = MagicMock()
-        mock_tar.extractall.side_effect = fake_extractall
+        mock_members = [MagicMock() for _ in range(3)]
+        mock_members[0].name = "sherpa-onnx-whisper-small/small-encoder.onnx"
+        mock_members[1].name = "sherpa-onnx-whisper-small/small-decoder.onnx"
+        mock_members[2].name = "sherpa-onnx-whisper-small/small-tokens.txt"
+        mock_tar.getmembers.return_value = mock_members
+        mock_tar.extract.side_effect = fake_extract
         mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
         mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
 

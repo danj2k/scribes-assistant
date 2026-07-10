@@ -60,15 +60,18 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extractall(path):
-            for f in REQUIRED_FILES:
-                (Path(tmp_model_dir) / f).write_bytes(b"extracted")
+        def fake_extract(member, path):
+            # member.name has been stripped to just the filename (e.g. "small-encoder.onnx")
+            (Path(path) / member.name).write_bytes(b"extracted")
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
                 with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
                     mock_tar = MagicMock()
-                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_tar.getmembers.return_value = [MagicMock() for _ in REQUIRED_FILES]
+                    for i, m in enumerate(mock_tar.getmembers()):
+                        m.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[i]}"
+                    mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
                     result = download_model(tmp_model_dir)
@@ -103,15 +106,19 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extractall(path):
+        def fake_extract(member, path):
             # Only create one of the three required files
-            (Path(tmp_model_dir) / REQUIRED_FILES[0]).write_bytes(b"partial")
+            (Path(path) / member.name).write_bytes(b"partial")
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
                 with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
                     mock_tar = MagicMock()
-                    mock_tar.extractall.side_effect = fake_extractall
+                    # Only return one member — simulates archive with missing files
+                    mock_member = MagicMock()
+                    mock_member.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[0]}"
+                    mock_tar.getmembers.return_value = [mock_member]
+                    mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
                     with pytest.raises(FileNotFoundError, match="missing"):
@@ -133,15 +140,18 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extractall(path):
-            for f in REQUIRED_FILES:
-                (Path(tmp_model_dir) / f).write_bytes(b"extracted")
+        def fake_extract(member, path):
+            # member.name has been stripped to just the filename (e.g. "small-encoder.onnx")
+            (Path(path) / member.name).write_bytes(b"extracted")
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
                 with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
                     mock_tar = MagicMock()
-                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_tar.getmembers.return_value = [MagicMock() for _ in REQUIRED_FILES]
+                    for i, m in enumerate(mock_tar.getmembers()):
+                        m.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[i]}"
+                    mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
                     download_model(tmp_model_dir)
@@ -200,15 +210,18 @@ class TestSha256Verification:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extractall(path):
-            for f in REQUIRED_FILES:
-                (Path(tmp_model_dir) / f).write_bytes(b"extracted")
+        def fake_extract(member, path):
+            # member.name has been stripped to just the filename (e.g. "small-encoder.onnx")
+            (Path(path) / member.name).write_bytes(b"extracted")
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
                 with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
                     mock_tar = MagicMock()
-                    mock_tar.extractall.side_effect = fake_extractall
+                    mock_tar.getmembers.return_value = [MagicMock() for _ in REQUIRED_FILES]
+                    for i, m in enumerate(mock_tar.getmembers()):
+                        m.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[i]}"
+                    mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
                     result = download_model(tmp_model_dir)
