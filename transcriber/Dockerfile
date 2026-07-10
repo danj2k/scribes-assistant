@@ -21,10 +21,8 @@ COPY transcriber/ /app/transcriber/
 # Copy scripts (model download, etc.)
 COPY scripts/ /app/transcriber/scripts/
 
-# Install transcriber dependencies
-RUN cd /app/transcriber && pip install --no-cache-dir -r requirements.txt
-
-# Create data directories for model and recordings
+# Install transcriber dependencies and create data directories
+RUN cd /app/transcriber && pip install --no-cache-dir -r requirements.txt \
     && mkdir -p /app/data/recordings \
     && mkdir -p /app/data/transcripts \
     && mkdir -p /app/data/logs
