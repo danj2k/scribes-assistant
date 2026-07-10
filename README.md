@@ -55,13 +55,15 @@ For more details, see Discord's guide on [Adding a Bot to a Server](https://disc
    echo "YOUR_BOT_TOKEN_HERE" > secrets/bot_token
    chmod 600 secrets/bot_token
    ```
-   Both the bot and transcriber services receive this token via a read-only Docker secret mounted at `/run/secrets/bot_token`. It is never baked into an image or visible in `docker inspect`.
+   The bot service receives this token via a read-only Docker secret mounted at `/run/secrets/bot_token`. It is never baked into an image or visible in `docker inspect`.
 
 3. **Review and edit `config.yaml`:**
    ```yaml
-   whisper_model: small          # whisper tiny/base/small/medium/large
-   transcriber_threads: 2        # CPU cores for transcription (leave headroom for bot)
-   lexicon_enabled: true
+   transcriber:
+     model: small                # whisper tiny/base/small/medium/large-v3
+     threads: 2                  # CPU cores for transcription (leave headroom for bot)
+   lexicon:
+     enabled: true
    ```
 
 4. **Start the services:**
@@ -73,7 +75,7 @@ For more details, see Discord's guide on [Adding a Bot to a Server](https://disc
    ```bash
    docker compose exec transcriber python scripts/download_model.py
    ```
-   This downloads the Whisper small model (~500MB) to the shared volume. The script:
+   This downloads the Whisper small model (~609MB) to the shared volume. The script:
    - Skips download if model files already exist
    - Shows download progress (MB and percentage)
    - Verifies all required files are extracted
@@ -137,7 +139,7 @@ Slash commands use Discord's named parameters, so there's no ambiguity between t
 - `/lexicon add term:Waterdeep description:City name, major location in the campaign`
 
 Words are used in two ways to improve transcription:
-1. **Initial prompt injection** — lexicon terms are passed to the Whisper model as a text hint, priming it to recognise custom vocabulary during transcription.
+1. **Hotwords bias** — lexicon terms are passed to the Whisper model as decoding hints, strongly biasing it to recognise custom vocabulary during transcription.
 2. **Post-correction** — after transcription, the bot applies fuzzy matching to correct common misrecognitions of lexicon words.
 
 ---
@@ -166,8 +168,7 @@ Settings are defined in `config.yaml` (see `config.yaml.example` for all options
 | `lexicon.enabled` | `true` | Enable/disable lexicon features |
 | `lexicon.fuzzy_threshold` | `0.2` | Levenshtein distance for fuzzy post-correction matching |
 | `session.idle_timeout` | `60` | Seconds before auto-ending session when bot is alone |
-| `transcript_channel_id` | `""` (empty) | Discord channel ID for transcript delivery. Empty = channel where the session was started |
-| `transcriber.model` | `small` | Whisper model size (tiny/base/small/medium) |
+| `transcriber.model` | `small` | Whisper model size (tiny/base/small/medium/large-v3) |
 | `transcriber.threads` | `0` | CPU threads for transcription (0 = all available) |
 | `transcriber.poll_interval` | `10` | Seconds between queue polling cycles |
 | `logging.level` | `INFO` | Log level (DEBUG/INFO/WARNING/ERROR) |

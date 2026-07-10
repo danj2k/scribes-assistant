@@ -6,10 +6,6 @@ services:
       dockerfile: bot/Dockerfile
     container_name: scribes-bot
     restart: unless-stopped
-    secrets:
-      - bot_token
-    environment:
-      - DISCORD_TOKEN_FILE=/run/secrets/bot_token
     volumes:
       - scribes-data:/data
     networks:
@@ -31,10 +27,6 @@ services:
       dockerfile: transcriber/Dockerfile
     container_name: scribes-transcriber
     restart: unless-stopped
-    secrets:
-      - bot_token
-    environment:
-      - DISCORD_TOKEN_FILE=/run/secrets/bot_token
     volumes:
       - scribes-data:/data
     networks:

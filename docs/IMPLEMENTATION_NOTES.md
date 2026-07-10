@@ -49,7 +49,7 @@ Bot tokens and other secrets are provided via Docker secrets, which mount as fil
 
 ### Model Weight Persistence
 
-sherpa-onnx model weights (~500MB for whisper-small) are stored in a Docker volume mounted at `/data/models/`. This volume persists across container rebuilds — only downloaded once on first run.
+sherpa-onnx model weights (~609MB for whisper-small) are stored in a Docker volume mounted at `/data/models/`. This volume persists across container rebuilds — only downloaded once on first run.
 
 A standalone download script (`scripts/download_model.py`) handles the download with progress reporting. It can be run via `docker compose exec transcriber python scripts/download_model.py`. The script is idempotent — skips download if all required files already exist. The transcriber's main loop also calls `download_model()` as a fallback on startup.
 

@@ -8,7 +8,10 @@
 
 ## Technical Debt
 
-(None yet — project is pre-implementation.)
+- **No transcript_channel_id implementation**: The config example documents discord.transcript_channel_id but it has no backing in _DEFAULTS or the Config class — it is a no-op.
+- **Dead code in shared/lexicon.py**: get_terms_list() is only called by the now-orphaned build_initial_prompt() (removed in the Whisper migration). Needs cleanup or repurposing.
+- **add_transcript() signature mismatch**: channel_id parameter is accepted but never stored — passed by caller under a different semantic.
+- **Inconsistent shared package install**: bot and transcriber Dockerfiles use different pip install patterns (directory install vs editable install).
 
 ## Future Considerations
 

@@ -8,9 +8,6 @@ discord:
   # Discord (User Settings > Advanced), then right-click your server > Copy Server ID
   # https://discord.com/developers/docs/reference#snowflakes
   guild_id: ""
-    # Numeric Snowflake ID for the channel where transcripts are delivered
-  # Leave empty to use the channel where /session was used
-  transcript_channel_id: ""
 
   # Command permissions
   permissions:
