@@ -215,3 +215,20 @@ attribute. These are discord.py 2.0 features. py-cord uses its own
 If migrating code from discord.py to py-cord, search for all uses of
 `app_commands`, `bot.tree`, and `tree.command` — none of these exist
 in py-cord. See `bot/commands.py` for the corrected patterns.
+
+### Testing Philosophy
+
+The test suite is curated to test what IS there, not what ISN'T. Tests that assert the absence of removed functionality (e.g. "DeliveryLoop has no lexicon attribute", "config has no bot.log_level key") are pruned after the corresponding bug fix is committed. They add maintenance burden without ongoing value — the correct behaviour is simply the default once the code is clean. Positive tests that exercise real functionality are preferred over negative tests that guard against regressions of bugs that can no longer recur because the code path has been removed entirely.
+
+**Coverage:**
+
+- `bot/delivery.py` (DeliveryLoop) — covered by `tests/test_delivery.py` (14 tests): constructor, start/idempotency, poll behaviour (complete sessions, no transcript path, already-delivered, empty list), delivery (thread creation, long transcript splitting, followup message), and run loop (poll-then-sleep, shutdown event, exception handling).
+- `bot/voice.py` (idle timeout) — covered by `tests/test_voice.py` (9 tests): on_voice_state_update (bot members ignored, no voice client ignored, starts timer when alone, cancels on user join) and _idle_timeout (timeout ends session and disconnects, no active session just disconnects, cancellation is silent, task cleanup, not-recording state doesn't stop the bot).
+- `shared/lexicon.py` — covered by `tests/test_lexicon.py` and `tests/test_lexicon_integration.py` (positive tests only: correction pipeline, tie-breaking, case preservation, tokenisation, hotwords format).
+- `shared/database.py` — covered by `tests/test_database.py` (session lifecycle, file registration, segment storage, fail_session, queued sessions without files, single-session enforcement).
+- `shared/config.py` — covered by `tests/test_config.py` (defaults, deep copy isolation, logging config, bot token validation).
+- `transcriber/worker.py` — covered by `tests/test_transcriber_worker.py` (model loading, model size filenames, download, segment building, transcription result).
+- `transcriber/main.py` — covered by `tests/test_sigterm_handling.py` (SIGTERM flag handling).
+- `bot/commands.py` — covered by `tests/test_commands.py` (permissions), `tests/test_recording_callback.py` (after-callback factory), `tests/test_start_command_defer.py` (interaction deferral).
+- `shared/tar_utils.py` — covered by `tests/test_tar_utils.py` (path traversal protection).
+- Transcript merge — covered by `tests/test_transcript_merge.py` (interleaved merge, tie-breaking, fallback, empty segments, timestamp formatting).

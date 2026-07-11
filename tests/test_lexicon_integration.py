@@ -307,34 +307,6 @@ class TestCorrectTextTokenisation:
         assert result == "Theron said hello to the dragon", f"Got: {result!r}"
 
 
-class TestDeliveryLoopNoLexicon:
-    """Verify DeliveryLoop no longer imports or uses Lexicon for correction.
-
-    Bug #13: correction moved from bot/delivery.py to transcriber/main.py.
-    The bot's delivery loop just reads the already-corrected transcript
-    and posts it to Discord — it does not apply lexicon correction.
-    """
-
-    def test_delivery_loop_has_no_lexicon_attribute(self):
-        """DeliveryLoop should not have a _lexicon attribute."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        assert not hasattr(loop, "_lexicon")
-
-    def test_delivery_loop_has_no_correct_text_method(self):
-        """DeliveryLoop should not have a _correct_text method."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        assert not hasattr(loop, "_correct_text")
-
-    def test_delivery_loop_does_not_import_lexicon(self):
-        """bot.delivery module should not import Lexicon."""
-        import bot.delivery as delivery_mod
-        assert not hasattr(delivery_mod, "Lexicon")
-
-
 class TestBuildHotwords:
     """Test the hotwords builder used by the transcriber."""
 

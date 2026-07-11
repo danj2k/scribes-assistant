@@ -370,30 +370,6 @@ class TestFailSession:
         db.fail_session("sess1")
         assert db.get_active_session("111") is None
 
-    def test_update_status_failed_does_not_clear_active(self, db):
-        """Regression for Bug #8: update_session_status(FAILED) does NOT set
-        ended_at, so the session stays visible to get_active_session().
-
-        This is the bug: start_command used update_session_status(STATUS_FAILED)
-        on voice join failure, leaving ended_at=NULL. get_active_session()
-        filters on ended_at IS NULL, so the dead session blocked all future
-        /start commands in the guild. The fix uses fail_session() which sets
-        both status and ended_at.
-        """
-        _make_session(db, sid="sess1", guild="111")
-
-        # The wrong approach (what the bug did):
-        db.update_session_status("sess1", STATUS_FAILED)
-        assert db.get_session("sess1")["status"] == STATUS_FAILED
-        assert db.get_session("sess1")["ended_at"] is None  # the bug!
-        assert db.get_active_session("111") is not None  # still blocks!
-
-        # The correct approach (what the fix does):
-        db.fail_session("sess1")
-        assert db.get_session("sess1")["status"] == STATUS_FAILED
-        assert db.get_session("sess1")["ended_at"] is not None
-        assert db.get_active_session("111") is None  # no longer blocks
-
     def test_failed_voice_join_allows_new_session(self, db):
         """Regression for Bug #8: after a failed voice join (fail_session),
         a new /start in the same guild should succeed — get_active_session

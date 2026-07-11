@@ -772,3 +772,34 @@ The `/help` command was also unrestricted, but this is intentional — `/help` o
 - `docs/IMPLEMENTATION_NOTES.md` — updated Voice channel join failure section to explain the defer and followup.send pattern
 
 **Impact:** 286/286 tests pass (8 new). `/start` now reliably responds within Discord's interaction deadline regardless of voice gateway latency.
+
+---
+
+## Test Suite Pruning — Removing Absence Tests, Adding Missing Coverage
+
+**Date:** 2026-07-11
+
+**Problem:** During the bug-fixing session, several tests were added that verified removed functionality was no longer present (absence tests). While useful as regression guards during active development, they test what ISN'T there rather than what IS — adding maintenance burden without ongoing value. The user requested pruning these in favour of tests that exercise the project's current and expected functionality.
+
+**Absence tests removed (5 tests across 3 files):**
+
+1. `tests/test_lexicon_integration.py` — `TestDeliveryLoopNoLexicon` class (3 tests): `test_delivery_loop_has_no_lexicon_attribute`, `test_delivery_loop_has_no_correct_text_method`, `test_delivery_loop_does_not_import_lexicon`. These asserted DeliveryLoop didn't have lexicon-related attributes (removed in Bug #13). The correct behaviour is now simply the default — DeliveryLoop has never had lexicon in its final design.
+
+2. `tests/test_database.py` — `test_update_status_failed_does_not_clear_active` (1 test): Demonstrated that the old `update_session_status(STATUS_FAILED)` code path left `ended_at = NULL`. This code path is no longer used — `fail_session()` replaced it in Bug #8. The correct behaviour is already covered by `test_fail_session_sets_status_and_ended_at` and `test_fail_session_clears_active`.
+
+3. `tests/test_config.py` — `test_bot_section_only_has_token_file` (1 test): Asserted `log_*` keys were absent from `_DEFAULTS["bot"]` (removed in Bug #23). Tests the absence of removed config keys rather than testing real configuration behaviour.
+
+**Missing positive tests added (23 tests across 2 new files):**
+
+1. `tests/test_delivery.py` (14 tests) — New file covering `bot/delivery.py` DeliveryLoop, which previously had zero test coverage:
+   - `TestDeliveryLoopInit` (2): Constructor sets attributes, poll_interval default.
+   - `TestDeliveryLoopStart` (2): `start()` creates asyncio task; idempotent when already running.
+   - `TestDeliveryLoopPoll` (4): Polls DB for complete sessions; skips sessions with no transcript path; skips already-delivered sessions (thread_id set); handles DB returning empty list.
+   - `TestDeliveryLoopDeliver` (3): Creates Discord thread with correct name; splits long transcripts at 1900-char boundary; sends followup message with thread link.
+   - `TestDeliveryLoopRun` (3): Run loop polls then sleeps; run loop stops on shutdown event; run loop handles exceptions without crashing.
+
+2. `tests/test_voice.py` (9 tests) — New file covering `bot/voice.py` idle timeout, which previously had zero test coverage:
+   - `TestOnVoiceStateUpdate` (4): Ignores bot members; ignores when no voice client; starts idle timer when alone in channel; cancels idle timer when a user joins.
+   - `TestIdleTimeout` (5): Timeout ends session and disconnects; no active session just disconnects; cancellation is silent (no session end, no crash); cleans up task from `_idle_tasks` dict; not-recording state doesn't stop the bot.
+
+**Impact:** 304/304 tests pass (0 warnings). Net change: -5 absence tests, +23 positive tests = +18 tests. The test suite now covers two previously untested modules (delivery.py and voice.py) and no longer carries tests for removed functionality.

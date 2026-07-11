@@ -211,11 +211,3 @@ class TestLoggingConfig:
         assert c.log_max_size_mb == 5
         assert c.log_backup_count == 2
 
-    def test_bot_section_only_has_token_file(self, tmp_path):
-        """_DEFAULTS['bot'] must not contain log_* keys after Bug #23 cleanup."""
-        import shared.config as cfg_mod
-        bot_defaults = cfg_mod._DEFAULTS["bot"]
-        assert "token_file" in bot_defaults
-        assert "log_level" not in bot_defaults
-        assert "log_max_size_mb" not in bot_defaults
-        assert "log_backup_count" not in bot_defaults
