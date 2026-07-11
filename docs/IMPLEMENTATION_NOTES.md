@@ -22,7 +22,13 @@ The lexicon improves transcription quality through two independent mechanisms:
 The lexicon terms are formatted by `build_hotwords()` into a forward-slash separated string: `"Term1/Term2/Term3"`. This is passed to sherpa-onnx via `create_stream(hotwords=...)`. Hotwords are a hard decoding bias — the model is strongly biased toward recognising these terms during transcription. Capped at 100 terms to stay within sherpa-onnx token limits.
 
 **Stage 2: Fuzzy post-correction (after transcription, transcriber side)**
-After each audio file is transcribed, `transcriber/main.py`'s `_correct_text()` applies Levenshtein-based fuzzy matching to every word in each segment. Each word is checked against the lexicon — if a close match exists (within the configured threshold), it's corrected to the canonical form. The corrected text is what gets stored in the database and written to the transcript file.
+After each audio file is transcribed, `transcriber/main.py`'s `_correct_text()` applies a three-stage correction pipeline to every word in each segment:
+
+1. **Exact lexicon match** — if the word matches a lexicon term case-insensitively, it's canonicalised (e.g. "theron" → "Theron"). This takes priority over the dictionary gate because an exact match is a true positive — the correction is just capitalisation/canonical form. Some lexicon terms happen to appear in English dictionaries (e.g. "theron" is a Greek name); blocking these would prevent proper canonicalisation of correctly-transcribed terms.
+2. **English dictionary gate** — if the word is a recognised English word (via pyspellchecker's bundled dictionary, O(1) set membership), it's left alone. This prevents false positives like "ore" → "Orc" or "may" → "Mae". pyspellchecker is used for dictionary membership only, not for its own correction suggestions.
+3. **Fuzzy lexicon match** — if the word is neither an exact lexicon match nor an English word, Levenshtein distance is computed against every lexicon term. If the best match is within the configured threshold (proportional to word length, default factor 0.5, minimum 1), the word is corrected. This catches misrecognised D&D terms like "theran" → "Theron" (distance 1).
+
+The corrected text is what gets stored in the database and written to the transcript file.
 
 This runs in the transcriber, not the bot's delivery loop, so the corrected text is persisted before delivery. The bot's `/lexicon` commands manage the YAML file (add, list, remove) — the bot does not call `correct()`.
 

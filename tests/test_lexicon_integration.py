@@ -119,6 +119,78 @@ class TestTranscriberCorrectText:
         assert result == text
 
 
+class TestCorrectTextDictionaryGate:
+    """Integration tests for the dictionary gate through _correct_text.
+
+    The gate prevents common English words from being fuzzy-corrected
+    to D&D lexicon terms, while still allowing correction of
+    non-English words and exact lexicon matches.
+    """
+
+    def _make_lexicon(self, terms_dict):
+        """Create a Lexicon instance without loading from file."""
+        lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.5
+        lex.terms = terms_dict
+        return lex
+
+    def test_english_words_not_corrected(self):
+        """Common English words that fuzzy-match lexicon terms are left alone.
+
+        'ore' is English and distance 1 from 'orc' — the dictionary
+        gate must prevent the false-positive correction 'ore' → 'Orc'.
+        """
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "orc": {"term": "Orc", "description": "Monster"},
+            "theron": {"term": "Theron", "description": "Elf name"},
+        })
+        # "ore" is English → not corrected to "Orc"
+        # "theron" is an exact lexicon match → corrected to "Theron"
+        result = _correct_text("theron picked up some ore", lex)
+        assert result == "Theron picked up some ore", f"Got: {result!r}"
+
+    def test_misrecognised_non_english_corrected(self):
+        """Non-English words close to lexicon terms are still corrected."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "theron": {"term": "Theron", "description": "Elf name"},
+            "grimjaw": {"term": "Grimjaw", "description": "Dwarf name"},
+        })
+        # "theran" and "grimjaw" — "theran" is not English, fuzzy-corrected
+        result = _correct_text("theran met grimjaw", lex)
+        assert result == "Theron met Grimjaw", f"Got: {result!r}"
+
+    def test_mixed_english_and_lexicon_words(self):
+        """A sentence with English words and lexicon terms — only lexicon words corrected."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "theron": {"term": "Theron", "description": "Elf name"},
+            "orc": {"term": "Orc", "description": "Monster"},
+        })
+        # "Theron" is an exact lexicon match → canonicalised
+        # "the" is English → left alone
+        # "orc" is an exact lexicon match → canonicalised
+        # "with" is English → left alone
+        # "sword" is English → left alone
+        result = _correct_text("Theron the orc with a sword", lex)
+        assert result == "Theron the Orc with a sword", f"Got: {result!r}"
+
+    def test_no_false_positive_on_common_words(self):
+        """Regression test: common English words that are 1 edit from lexicon terms."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "mae": {"term": "Mae", "description": "Character name"},
+        })
+        # "may" is English, distance 1 from "mae" — must NOT be corrected
+        result = _correct_text("I may go to the tavern", lex)
+        assert result == "I may go to the tavern", f"Got: {result!r}"
+
+
 class TestDeliveryLoopNoLexicon:
     """Verify DeliveryLoop no longer imports or uses Lexicon for correction.
 

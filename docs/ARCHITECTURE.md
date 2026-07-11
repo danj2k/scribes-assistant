@@ -39,7 +39,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Poll the SQLite queue for sessions with status QUEUED
 - Load the lexicon for hotwords bias and post-transcription fuzzy correction
 - Run sherpa-onnx Whisper transcription with initial prompt injection
-- Apply lexicon fuzzy correction (Levenshtein distance) to each segment's text before storing in the database
+- Apply lexicon fuzzy correction via a three-stage pipeline: (1) exact case-insensitive lexicon match → canonicalise, (2) English dictionary gate via pyspellchecker → skip if recognised English word, (3) Levenshtein fuzzy match against the D&D lexicon → replace if within threshold. This prevents false positives like "ore" → "Orc" while still correcting misrecognised D&D terms like "theran" → "Theron".
 - Capture token-level timestamps for interleaved transcript merging
 - Store corrected per-file transcript segments in the database
 - Merge all speakers' segments chronologically after ALL files are transcribed
@@ -49,6 +49,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 **Key dependencies:**
 - sherpa-onnx (speech-to-text, Whisper — model size configurable, default "small")
 - Levenshtein (fuzzy string matching for post-transcription lexicon correction)
+- pyspellchecker (English dictionary gate — prevents false-positive corrections of common English words to D&D terms; used for O(1) set membership only, not for its own correction suggestions)
 - ffmpeg (audio conversion to 16kHz mono WAV)
 - SQLite3 (queue and lexicon access)
 
@@ -131,7 +132,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 5. Converts WAV files to 16kHz mono via ffmpeg
 6. Runs sherpa-onnx Whisper model (size from config, default "small") with hotwords bias
 7. Captures token-level timestamps from the recogniser result
-8. Groups tokens into segments, applies lexicon fuzzy correction (Levenshtein distance) to each segment's text, and stores corrected segments in the transcript_segments table with the speaker's name
+8. Groups tokens into segments, applies lexicon correction via a three-stage pipeline (exact lexicon match → English dictionary gate → Levenshtein fuzzy match) to each segment's text, and stores corrected segments in the transcript_segments table with the speaker's name
 9. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue
 10. Writes the merged transcript to /data/transcripts/<session_id>.txt (already corrected)
 11. Updates session status to COMPLETE via set_transcript_path()

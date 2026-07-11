@@ -550,3 +550,28 @@ Existing `fake_extract` test mocks in `test_transcriber_worker.py` and `test_dow
 - `TestDeliveryLoopNoLexicon` (3 tests) — verifies `DeliveryLoop` no longer has `_lexicon` attribute, `_correct_text` method, or imports `Lexicon`
 
 **Impact:** Fuzzy correction is no longer dead code. The transcriber applies corrections before storing transcripts. The bot's delivery loop is simplified — it just reads and uploads. 214/214 tests pass.
+
+## Enhancement — pyspellchecker dictionary gate for lexicon correction
+
+**Date:** 2026-07-11
+
+**Problem:** `Lexicon.correct()` fuzzy-matched every input word against the D&D lexicon with no way to distinguish ordinary English words from misrecognised D&D terms. This caused false positives: "ore" → "Orc" (distance 1), "may" → "Mae" (distance 1), and similar corrections of common English words to D&D proper nouns. The lexicon should contain only non-English D&D terminology, but the corrector had no dictionary to check against.
+
+**Fix:** Added a three-stage correction pipeline in `shared/lexicon.py`:
+
+1. **Exact lexicon match** (stage 1, bypasses gate) — if the word matches a lexicon term case-insensitively, return the canonical form immediately. This catches correctly-transcribed terms that need canonicalisation (e.g. "theron" → "Theron"), including terms that happen to appear in English dictionaries. Exact matches are true positives, not false positives.
+2. **English dictionary gate** (stage 2) — if the word is a recognised English word (checked via `pyspellchecker`'s bundled dictionary, O(1) set membership using `word in spell`), return None. This blocks fuzzy correction of common English words, preventing false positives like "ore" → "Orc" and "may" → "Mae". pyspellchecker is used for dictionary membership only, not for its own correction suggestions.
+3. **Fuzzy lexicon match** (stage 3) — if the word is neither an exact lexicon match nor an English word, compute Levenshtein distance against every lexicon term. If the best match is within the configured threshold (proportional to word length, default factor 0.5, minimum 1), return the matched term. This catches misrecognised D&D terms like "theran" → "Theron" (distance 1).
+
+**Dependencies:**
+- Added `pyspellchecker>=0.8.0` to `transcriber/requirements.txt`
+- pyspellchecker is an optional import — if not installed, the gate is skipped and correction falls back to exact + fuzzy matching only (same behaviour as before this change)
+- A module-level lazy singleton (`_get_spell_checker()`) initialises SpellChecker on first use and caches the instance
+
+**Stage ordering rationale:** Exact match comes before the dictionary gate because some lexicon terms appear in English dictionaries (e.g. "theron" is a Greek name). If the gate came first, these terms would be blocked from canonicalisation. The gate only blocks FUZZY matches — exact matches are always true positives.
+
+**Tests:**
+- `TestDictionaryGate` (8 tests in `test_lexicon.py`) — tests the gate at the `Lexicon.correct()` level: English word blocked from fuzzy match, non-English word still corrected, exact match bypasses gate, "may" → "Mae" blocked, numbers/punctuation skip gate, threshold still respected, fallback without pyspellchecker (both fuzzy and exact)
+- `TestCorrectTextDictionaryGate` (4 tests in `test_lexicon_integration.py`) — tests the gate through the full `_correct_text()` pipeline: English words not corrected in context, non-English words still corrected, mixed English and lexicon words in one sentence, regression test for "may" → "Mae"
+
+**Impact:** The false-positive problem is solved. Common English words like "ore", "may", "elf" are no longer corrected to D&D terms. Misrecognised D&D terms like "theran" → "Theron" are still corrected. Correctly-transcribed lexicon terms are still canonicalised. 227/227 tests pass (13 new).

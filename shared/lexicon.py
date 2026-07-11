@@ -18,6 +18,30 @@ try:
 except ImportError:
     Levenshtein = None
 
+try:
+    from spellchecker import SpellChecker
+    _spell_checker = None  # type: ignore[var-annotated]
+except ImportError:
+    SpellChecker = None
+    _spell_checker = None
+
+
+def _get_spell_checker():
+    """Return a lazily-initialised SpellChecker singleton, or None.
+
+    pyspellchecker loads its bundled English dictionary from a JSON
+    file on first use (~2 MB).  We defer this to the first correct()
+    call rather than import time so that:
+
+    - Environments that only use lexicon CRUD (the bot) pay no cost.
+    - Import failures are handled gracefully — correction falls back
+      to fuzzy-only when the package is not installed.
+    """
+    global _spell_checker
+    if SpellChecker is not None and _spell_checker is None:
+        _spell_checker = SpellChecker()
+    return _spell_checker
+
 
 class Lexicon:
     """In-memory lexicon with file persistence.
@@ -97,21 +121,59 @@ class Lexicon:
     def correct(self, word: str) -> str | None:
         """Return the lexicon term closest to *word*, or ``None``.
 
-        Uses Levenshtein distance when available.  Falls back to
-        case-insensitive exact matching when Levenshtein is not installed.
+        Uses a three-stage correction pipeline to avoid false positives
+        on ordinary English words:
+
+        1. **Exact lexicon match** — if *word* matches a lexicon term
+           case-insensitively, return the canonical form immediately.
+           This bypasses the dictionary gate because an exact match is
+           a true positive, not a false positive — the correction is
+           just canonicalisation (e.g. "theron" → "Theron"). Some
+           lexicon terms happen to appear in English dictionaries
+           (e.g. "theron" is a Greek name); blocking these would
+           prevent proper capitalisation of correctly-transcribed terms.
+        2. **English dictionary gate** — if *word* is a recognised
+           English word (via pyspellchecker), return None. This
+           prevents the fuzzy matcher from "correcting" common words
+           like "ore" → "Orc" or "may" → "Mae".
+        3. **Fuzzy lexicon match** — if *word* is neither an exact
+           lexicon match nor an English word, compute Levenshtein
+           distance to every lexicon term. If the best match is within
+           the configured threshold, return it. This catches
+           misrecognised D&D terms like "theran" → "Theron".
+
         Returns ``None`` when:
         - the lexicon is empty
+        - the word is a recognised English word (dictionary gate)
         - no exact or fuzzy match found
+
+        Falls back to exact + fuzzy matching only (no dictionary gate)
+        when pyspellchecker is not installed.
         """
         if not self.terms:
             return None
 
         key = word.lower()
-        # Exact case-insensitive match (always available)
+
+        # Stage 1: Exact case-insensitive lexicon match.
+        # Takes priority over the dictionary gate — an exact match
+        # is a true positive.  This catches words that are themselves
+        # lexicon terms (e.g. "theron" → "Theron"), including terms
+        # that happen to appear in English dictionaries.
         if key in self.terms:
             return self.terms[key]["term"]
 
-        # Fuzzy match via Levenshtein (optional dependency)
+        # Stage 2: English dictionary gate.
+        # If the word is a recognised English word, it should NOT be
+        # fuzzy-corrected to a D&D term — this prevents false positives
+        # like "ore" → "Orc" or "may" → "Mae".
+        spell = _get_spell_checker()
+        if spell is not None and key in spell:
+            return None
+
+        # Stage 3: Fuzzy match via Levenshtein (optional dependency).
+        # Only reached for words that are neither exact lexicon matches
+        # nor English words — typically misrecognised D&D proper nouns.
         if Levenshtein is None:
             return None
 
