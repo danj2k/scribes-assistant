@@ -136,7 +136,8 @@ the model size hardcoded into the directory name. Two independent problems:
   1. Added `_check_permission(interaction, config) -> tuple[bool, str | None]` helper function (line 21). Returns `(True, None)` when access is granted, or `(False, error_message)` when denied.
   2. The helper checks `config.restrict_commands` — if `False`, all users are allowed. If `True` but `config.allowed_roles` is empty, all users are allowed. Otherwise, the user's role names (case-insensitive) and role IDs are compared against `config.allowed_roles`.
   3. Added permission check calls at the top of 7 command handlers: `start_command`, `stop_command`, `status_command`, `session_command`, `lexicon_add`, `lexicon_remove`, `lexicon_list`.
-  4. Left `/help` and `/invite` unrestricted — information commands should always be accessible.
+  4. Left `/help` unrestricted — informational command, no security concern.
+  5. `/invite` was also left unrestricted at this point (later addressed in Bug #22).
 - **Fix (tests/test_commands.py)**: Created new test file with 10 test cases covering:
   - Restrictions disabled (`restrict_commands=False`)
   - Empty allowed roles list
@@ -732,3 +733,24 @@ The `setup_logging_from_config(config, name)` wrapper reads `config.log_level`, 
 - `docs/IMPLEMENTATION_NOTES.md` — added paragraph to Logging Configuration section explaining the removal of `bot.*` logging keys
 
 **Impact:** 274/274 tests pass (9 new). The `config.yaml.example` already only used `logging.*` keys, so no example config changes were needed. Existing deployments with `bot.log_*` keys in their `config.yaml` will silently fall through to defaults (same behaviour as if the key was absent) — no error, just ignored.
+
+---
+
+## Bug #22 — `/invite` command missing permission check
+
+**Date:** 2026-07-11
+
+**Problem:** The `/invite` slash command in `bot/commands.py` generated a bot invite URL without checking whether the calling user had permission. All other operational commands (`/start`, `/stop`, `/status`, `/session`, `/lexicon *`) called `_check_permission()` at the top of their handlers, but `/invite` was missed. This allowed any server member to generate an OAuth2 invite URL for the bot, even when `restrict_commands` was enabled with a role allowlist.
+
+The `/help` command was also unrestricted, but this is intentional — `/help` only displays command usage text (no side effects, no security surface). `/invite` is different: it produces a bot invite URL that could be used to add the bot to other servers.
+
+**Root cause:** When Bug #8 added permission checks, `/invite` was explicitly left open alongside `/help` under the assumption that both were "information commands." `/invite` is not purely informational — it generates an actionable OAuth2 URL.
+
+**Fix:** Added `_check_permission(interaction, bot.config)` call at the top of `invite_command()`, following the same pattern as all other command handlers. If denied, sends an ephemeral error message and returns early. `/help` remains intentionally unrestricted.
+
+**Files changed:**
+- `bot/commands.py` — added permission check to `invite_command()` (5 lines, lines 287–292)
+- `tests/test_commands.py` — added `TestInviteCommandPermission` class (4 tests): denied without matching role, allowed with matching role, allowed when restriction disabled, allowed when no roles configured
+- `docs/DEVELOPMENT_LOG.md` — updated Bug #8 entry to note `/invite` was later addressed; added this entry
+
+**Impact:** 277/277 tests pass (4 new). `/invite` now respects the same permission model as all other commands. `/help` remains open to all users.

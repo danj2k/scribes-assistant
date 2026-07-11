@@ -163,6 +163,12 @@ Discord slash commands have built-in parameter validation — mistyped command n
 
 These are normal application logic responses, not exceptions. Use `respond()` or `respond(embed=error_embed)` to give clear feedback.
 
+### Command Permissions
+
+All slash commands except `/help` call `_check_permission(interaction, config)` at the top of the handler. If `config.restrict_commands` is `False` (the default), all users are allowed. If `True` and `config.allowed_roles` is empty, all users are allowed. Otherwise the user's Discord role names (case-insensitive) and role IDs are checked against `allowed_roles`.
+
+`/help` is intentionally left unrestricted — it only displays command usage text and has no side effects. `/invite` was initially left open alongside `/help`, but was later gated (Bug #22) because generating a bot invite URL is an admin action, not purely informational.
+
 ### Transcriber Signal Handling (SIGTERM)
 
 Docker sends `SIGTERM` to a container's PID 1 process on `docker stop`. If the process doesn't exit within the grace period (default 10 seconds), Docker sends `SIGKILL` — which cannot be caught and terminates the process immediately. Any in-progress transcription work would be lost.

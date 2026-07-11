@@ -283,6 +283,14 @@ def setup_commands(bot: commands.Bot):
     # --- /invite ---
     @bot.slash_command(name="invite", description="Get a link to invite the bot to another server")
     async def invite_command(interaction: discord.Interaction):
+
+        # Permission check — generating a bot invite URL is an admin action,
+        # not something regular users should be able to do.
+        allowed, error = _check_permission(interaction, bot.config)
+        if not allowed:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
         if not bot.user:
             return
 

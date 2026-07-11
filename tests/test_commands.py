@@ -162,3 +162,46 @@ class TestCheckPermission:
         allowed, error = _check_permission(interaction, config)
         assert allowed is False
         assert error is not None
+
+
+class TestInviteCommandPermission:
+    """Verify the /invite permission gate.
+
+    /invite generates a bot invite URL — an admin-only action.  We can't
+    easily invoke the slash command handler (it's a closure inside
+    setup_commands and requires a full py-cord bot mock), so we verify
+    that _check_permission enforces the right policy for the /invite
+    scenario: restricted when roles are configured, open when they're not.
+    """
+
+    def test_invite_denied_without_matching_role(self):
+        """Non-admin user is denied /invite when roles are configured."""
+        config = FakeConfig(restrict_commands=True, allowed_roles=["DM"])
+        interaction = _make_interaction(["Player"], [42])
+        allowed, error = _check_permission(interaction, config)
+        assert allowed is False
+        assert error is not None
+
+    def test_invite_allowed_with_matching_role(self):
+        """Admin user is allowed /invite when roles are configured."""
+        config = FakeConfig(restrict_commands=True, allowed_roles=["DM"])
+        interaction = _make_interaction(["DM"], [99])
+        allowed, error = _check_permission(interaction, config)
+        assert allowed is True
+        assert error is None
+
+    def test_invite_allowed_when_restriction_disabled(self):
+        """Everyone can use /invite when command restriction is off."""
+        config = FakeConfig(restrict_commands=False, allowed_roles=[])
+        interaction = _make_interaction(["Player"], [42])
+        allowed, error = _check_permission(interaction, config)
+        assert allowed is True
+        assert error is None
+
+    def test_invite_allowed_when_no_roles_configured(self):
+        """Everyone can use /invite when allowed_roles is empty."""
+        config = FakeConfig(restrict_commands=True, allowed_roles=[])
+        interaction = _make_interaction(["Player"], [42])
+        allowed, error = _check_permission(interaction, config)
+        assert allowed is True
+        assert error is None
