@@ -3,6 +3,7 @@
 Provides load_config() for simple dict access and Config for convenience
 with dotted-key lookup and property accessors.
 """
+import copy
 import os
 from pathlib import Path
 
@@ -64,7 +65,7 @@ def load_config(path: str | None = None) -> dict:
 
     Returns a plain dict so callers can do ``config["discord"]["guild_id"]``.
     """
-    result = _DEFAULTS.copy()
+    result = copy.deepcopy(_DEFAULTS)
     if path and Path(path).exists():
         with open(path, "r") as f:
             file_cfg = yaml.safe_load(f) or {}

@@ -364,3 +364,23 @@ Even if the callback had been invoked correctly, `stop_command` called `end_sess
 - `test_future_returns_audio_count`: Future result is the audio file count; non-empty recordings do NOT call fail_session.
 
 **Impact:** Empty recordings now fail gracefully with user feedback instead of hanging forever. The session is marked FAILED with `ended_at` set, so it doesn't block future recordings. The transcriber safety net catches any edge cases that slip past the callback.
+
+---
+
+## 2026-07-11 — Bug Fix #7: Shallow copy of _DEFAULTS corrupts global config defaults
+
+### Bug #7: load_config() shallow-copies _DEFAULTS — nested mutations persist across calls
+
+**Symptom:** Any code that mutated a nested dict in the config returned by `load_config()` would silently corrupt the module-level `_DEFAULTS` dictionary. All subsequent `load_config()` calls within the same process would return the corrupted defaults — even if no YAML file was loaded. This could cause cascading configuration errors (e.g. allowed_roles accumulating stale entries, permission settings bleeding across test cases, etc.).
+
+**Root cause:** `load_config()` used `result = _DEFAULTS.copy()` — a shallow copy. While the top-level dict was copied, nested dicts (`discord`, `permissions`, `lexicon`, `transcriber`, etc.) were shared references to the same objects in `_DEFAULTS`. The `_deep_merge()` function was also called on this shallow copy, but `_deep_merge` itself is safe because it reassigns keys rather than mutating nested dicts in place — the bug was purely in the initial shallow copy.
+
+**Fix (shared/config.py):**
+- Added `import copy` at module level.
+- Changed `result = _DEFAULTS.copy()` to `result = copy.deepcopy(_DEFAULTS)` in `load_config()`.
+- `_deep_merge()` was left unchanged — its shallow `.copy()` is safe because it only reassigns keys, and the `base` it receives from `load_config()` is already a deep copy.
+
+**Tests (tests/test_config.py):**
+- Added `test_nested_defaults_are_independent`: loads config (no YAML), mutates `config["discord"]["permissions"]["allowed_roles"]` by appending a value, then asserts that `_DEFAULTS` is unmodified and that a fresh `load_config()` call returns the original empty list. This test would fail with the old shallow copy.
+
+**Impact:** Config defaults are now fully isolated per `load_config()` call. Mutations to returned config dicts cannot corrupt global state. 178/178 tests pass.

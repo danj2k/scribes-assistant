@@ -26,6 +26,29 @@ class TestLoadConfig:
         config = load_config(str(cfg_file))
         assert config["discord"]["guild_id"] == "999"
 
+    def test_nested_defaults_are_independent(self, tmp_path):
+        """Mutating a nested dict in the returned config must not corrupt _DEFAULTS.
+
+        Regression test for the shallow-copy bug: _DEFAULTS.copy() only copies
+        the top-level dict, so nested dicts (discord, permissions, lexicon, etc.)
+        are shared references.  Any in-place mutation of a nested default would
+        persist across all future load_config() calls.
+        """
+        import shared.config as cfg_mod
+        # Capture the original default value before any mutation
+        original_roles = cfg_mod._DEFAULTS["discord"]["permissions"]["allowed_roles"]
+        assert original_roles == []
+
+        config = load_config(str(tmp_path / "nonexistent.yaml"))
+        config["discord"]["permissions"]["allowed_roles"].append(12345)
+
+        # _DEFAULTS must NOT be affected
+        assert cfg_mod._DEFAULTS["discord"]["permissions"]["allowed_roles"] == []
+
+        # A fresh load_config call must also be unaffected
+        config2 = load_config(str(tmp_path / "nonexistent.yaml"))
+        assert config2["discord"]["permissions"]["allowed_roles"] == []
+
 
 class TestConfig:
     """Tests for the Config convenience class."""

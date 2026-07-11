@@ -77,6 +77,13 @@ To add a hash for a new model size, download the archive, run `_sha256_file()` a
 
 Discord has a file size limit (8MB for free servers). Most D&D sessions (3-4 hours) should produce transcripts well under this limit. If a transcript exceeds it, split into multiple parts or compress.
 
+### Config Defaults Are Deep-Copied
+
+`load_config()` in `shared/config.py` uses `copy.deepcopy(_DEFAULTS)` to produce the base config dict before merging YAML overrides. This ensures nested dicts (`discord`, `permissions`, `lexicon`, etc.) are independent copies, not shared references to the module-level `_DEFAULTS`. Without this, any in-place mutation of a nested default value (e.g. `config["discord"]["permissions"]["allowed_roles"].append(...)`) would permanently corrupt `_DEFAULTS` for all future `load_config()` calls within the same process.
+
+The `_deep_merge()` helper uses a shallow `.copy()` internally, which is safe because it reassigns keys rather than mutating nested dicts in place — and the `base` it receives is already a deep copy from `load_config()`.
+
+
 ### Logging Configuration
 
 Both containers use Python's standard `logging` module with two handlers:
