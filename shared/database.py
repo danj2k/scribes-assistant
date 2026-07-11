@@ -149,6 +149,41 @@ class Database:
                 (now, STATUS_QUEUED, session_id),
             )
 
+    def fail_session(self, session_id: str):
+        """Mark a session as failed and set ended_at.
+
+        Used when a session cannot produce a transcript — most commonly
+        when nobody spoke during the recording, so zero audio files were
+        captured. Setting ended_at is critical so that get_active_session()
+        (which filters on ended_at IS NULL) does not return this session
+        and block future recordings in the guild.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE sessions SET ended_at = ?, status = ? WHERE id = ?",
+                (now, STATUS_FAILED, session_id),
+            )
+
+    def get_queued_sessions_without_files(self) -> list[dict]:
+        """Return queued sessions that have zero audio files.
+
+        The transcriber uses this as a safety net to detect sessions stuck
+        in QUEUED status with no audio to transcribe (e.g. empty recording
+        where the callback path was missed, or all audio files were lost).
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT s.* FROM sessions s
+                   WHERE s.status = ?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM audio_files af WHERE af.session_id = s.id
+                     )
+                   ORDER BY s.started_at""",
+                (STATUS_QUEUED,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
     def set_thread_id(self, session_id: str, thread_id: str):
         with self._cursor() as cur:
             cur.execute("UPDATE sessions SET thread_id = ? WHERE id = ?", (thread_id, session_id))

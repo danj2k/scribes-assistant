@@ -326,3 +326,41 @@ Even if the callback had been invoked correctly, `stop_command` called `end_sess
 - `test_stop_command_proceeds_on_timeout`: `stop_command` proceeds with `end_session` on future timeout.
 
 **Impact:** Audio files are now reliably saved and registered in the database before the session transitions to QUEUED. The transcriber always finds the expected files. The fix also corrects a fundamental misunderstanding of py-cord's after-callback API — the old code's async callback was never invoked at all, meaning no recording ever worked correctly.
+
+---
+
+## 2026-07-11 — Bug Fix #6: Empty recording creates stuck session with no feedback
+
+### Bug #6: Nobody speaks during recording — session stuck forever, no user feedback
+
+**Symptom:** When a user starts recording, says nothing, and issues `/stop`, the recording callback runs but finds `sink.audio_data` empty. Zero WAV files are written, zero audio_files rows are registered. `end_session()` sets the session to QUEUED, but the transcriber's `get_next_queued_file()` always returns None (no files to transcribe), so it polls forever. The session is stuck in QUEUED with no transcript, no delivery, and no feedback to the user. `/status` shows it as "queued" indefinitely.
+
+**Root cause:** Two issues:
+1. The recording callback did not detect the zero-audio case. It wrote 0 files, logged "saved 0 audio file(s)", and returned. `stop_command` called `end_session()` unconditionally — moving a session with no audio into QUEUED.
+2. The transcriber had no safety net for sessions stuck in QUEUED with zero audio files. `get_next_queued_file()` returns None when there are no queued files, so the transcriber just sleeps and polls — it never checks whether the session itself should be abandoned.
+
+**Fix — shared/database.py:**
+- Added `fail_session(session_id)`: sets status to FAILED and sets `ended_at`. Setting `ended_at` is critical — `get_active_session()` filters on `ended_at IS NULL`, so without it, a failed session would block future recordings in the guild.
+- Added `get_queued_sessions_without_files()`: returns sessions in QUEUED status that have zero rows in `audio_files`. The transcriber calls this each poll cycle as a safety net.
+
+**Fix — bot/commands.py (recording callback):**
+- After writing audio files, if `audio_count == 0`, the callback calls `db.fail_session(session_id)` and logs a warning. The future result is the audio file count (0 for empty), so `stop_command` can distinguish empty recordings from real ones.
+
+**Fix — bot/commands.py (stop_command):**
+- `stop_command` now captures the future result (audio file count). If 0, it sends an ephemeral message informing the user that no audio was captured and no transcript will be generated, then returns without calling `end_session()`. The callback has already called `fail_session()`.
+
+**Fix — transcriber/main.py:**
+- Before calling `get_next_queued_file()`, the main loop queries `get_queued_sessions_without_files()` and marks each result as FAILED. This catches edge cases where the callback's `fail_session()` call was missed (e.g. callback timed out, exception in processing, or all audio files lost after writing).
+
+**Tests:** 169 + 9 new = 178 tests:
+- `test_fail_session_sets_status_and_ended_at`: fail_session sets FAILED status and ended_at.
+- `test_fail_session_clears_active`: Failed sessions are not returned by get_active_session.
+- `test_get_queued_sessions_without_files_finds_empty`: Queued session with no files is returned.
+- `test_get_queued_sessions_without_files_excludes_with_files`: Queued session with files is not returned.
+- `test_get_queued_sessions_without_files_excludes_non_queued`: Non-queued sessions are excluded.
+- `test_get_queued_sessions_without_files_excludes_failed`: Already-failed sessions are excluded.
+- `test_get_queued_sessions_without_files_multiple`: Multiple empty queued sessions all returned.
+- `test_callback_with_no_audio_data` (updated): Now verifies fail_session is called and future result is 0.
+- `test_future_returns_audio_count`: Future result is the audio file count; non-empty recordings do NOT call fail_session.
+
+**Impact:** Empty recordings now fail gracefully with user feedback instead of hanging forever. The session is marked FAILED with `ended_at` set, so it doesn't block future recordings. The transcriber safety net catches any edge cases that slip past the callback.

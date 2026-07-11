@@ -137,6 +137,17 @@ def run_worker(config_path: str = "/app/config.yaml"):
 
     while True:
         try:
+            # Safety net: clean up sessions stuck in QUEUED with no audio
+            # files (e.g. empty recording where the callback's fail_session
+            # call was missed, or all audio files were lost). Without this,
+            # such sessions poll forever and /status shows them as queued.
+            for session in db.get_queued_sessions_without_files():
+                logger.warning(
+                    "Session %s is queued but has no audio files — marking as failed",
+                    session["id"],
+                )
+                db.fail_session(session["id"])
+
             file_record = db.get_next_queued_file()
             if not file_record:
                 time.sleep(config.poll_interval)

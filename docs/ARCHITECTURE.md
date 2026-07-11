@@ -112,20 +112,22 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 4. User issues /stop → bot calls stop_recording(), which synchronously invokes the after-callback
 5. The after-callback schedules audio processing (writing WAV files, resolving speaker names from the guild member cache, registering files in audio_files with discord_user_id + speaker_name) via run_coroutine_threadsafe
 6. /stop awaits the future with a 30-second timeout, ensuring all audio files are written and registered before proceeding
-7. /stop calls end_session() which sets status to QUEUED — the transcriber is guaranteed to find all audio files already registered
+7. If the future resolves with 0 audio files (nobody spoke), the callback has already called fail_session() — /stop informs the user and returns without queuing for transcription
+8. Otherwise, /stop calls end_session() which sets status to QUEUED — the transcriber is guaranteed to find all audio files already registered
 
 ### Transcription (transcriber-driven)
 
 1. Transcriber polls queue, finds session with status QUEUED
-2. Updates the audio file status to TRANSCRIBING
-3. Loads lexicon from SQLite, builds initial prompt string
-4. Converts WAV files to 16kHz mono via ffmpeg
-5. Runs sherpa-onnx Whisper model (size from config, default "small") with initial prompt
-6. Captures token-level timestamps from the recogniser result
-7. Groups tokens into segments and stores them in the transcript_segments table with the speaker's name
-8. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue
-9. Writes the merged transcript to /data/transcripts/<session_id>.txt
-10. Updates session status to COMPLETE via set_transcript_path()
+2. Safety net: queries get_queued_sessions_without_files() and marks any queued sessions with zero audio files as FAILED (catches empty recordings that slipped past the callback)
+3. Updates the audio file status to TRANSCRIBING
+4. Loads lexicon from SQLite, builds initial prompt string
+5. Converts WAV files to 16kHz mono via ffmpeg
+6. Runs sherpa-onnx Whisper model (size from config, default "small") with initial prompt
+7. Captures token-level timestamps from the recogniser result
+8. Groups tokens into segments and stores them in the transcript_segments table with the speaker's name
+9. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue
+10. Writes the merged transcript to /data/transcripts/<session_id>.txt
+11. Updates session status to COMPLETE via set_transcript_path()
 
 ### Delivery (bot-driven)
 

@@ -1,7 +1,7 @@
 """Tests for shared.database — SQLite session and lexicon storage."""
 
 import pytest
-from shared.database import Database, STATUS_QUEUED, STATUS_RECORDING, STATUS_COMPLETE
+from shared.database import Database, STATUS_QUEUED, STATUS_RECORDING, STATUS_COMPLETE, STATUS_FAILED
 
 
 @pytest.fixture
@@ -254,6 +254,78 @@ class TestAudioFileSpeakerFields:
         files = db.get_audio_files("sess1")
         assert files[0]["discord_user_id"] is None
         assert files[0]["speaker_name"] is None
+
+
+class TestFailSession:
+    """Tests for fail_session and get_queued_sessions_without_files."""
+
+    def test_fail_session_sets_status_and_ended_at(self, db):
+        """fail_session marks the session as failed and sets ended_at."""
+        _make_session(db)
+        assert db.get_session("sess1")["ended_at"] is None  # still recording
+
+        db.fail_session("sess1")
+        session = db.get_session("sess1")
+        assert session["status"] == STATUS_FAILED
+        assert session["ended_at"] is not None
+
+    def test_fail_session_clears_active(self, db):
+        """A failed session is no longer returned by get_active_session."""
+        _make_session(db, sid="sess1", guild="111")
+        assert db.get_active_session("111") is not None
+
+        db.fail_session("sess1")
+        assert db.get_active_session("111") is None
+
+    def test_get_queued_sessions_without_files_finds_empty(self, db):
+        """A queued session with zero audio files is returned."""
+        _make_session(db, sid="s1")
+        db.end_session("s1")  # sets to QUEUED, no audio files added
+
+        result = db.get_queued_sessions_without_files()
+        assert len(result) == 1
+        assert result[0]["id"] == "s1"
+
+    def test_get_queued_sessions_without_files_excludes_with_files(self, db):
+        """A queued session that has audio files is NOT returned."""
+        _make_session(db, sid="s1")
+        db.add_audio_file("s1", "/tmp/a.wav")
+        db.end_session("s1")
+
+        result = db.get_queued_sessions_without_files()
+        assert len(result) == 0
+
+    def test_get_queued_sessions_without_files_excludes_non_queued(self, db):
+        """Sessions not in QUEUED status are excluded (even with no files)."""
+        _make_session(db, sid="s1")  # still RECORDING, no files
+
+        result = db.get_queued_sessions_without_files()
+        assert len(result) == 0
+
+    def test_get_queued_sessions_without_files_excludes_failed(self, db):
+        """A failed session with no files is not returned (already handled)."""
+        _make_session(db, sid="s1")
+        db.fail_session("s1")
+
+        result = db.get_queued_sessions_without_files()
+        assert len(result) == 0
+
+    def test_get_queued_sessions_without_files_multiple(self, db):
+        """Multiple empty queued sessions are all returned."""
+        _make_session(db, sid="s1", guild="111", channel="222")
+        _make_session(db, sid="s2", guild="333", channel="444")
+        _make_session(db, sid="s3", guild="555", channel="666")
+
+        db.end_session("s1")
+        db.end_session("s2")
+        db.add_audio_file("s3", "/tmp/a.wav")
+        db.end_session("s3")
+
+        result = db.get_queued_sessions_without_files()
+        ids = [r["id"] for r in result]
+        assert "s1" in ids
+        assert "s2" in ids
+        assert "s3" not in ids
 
 
 class TestDatabaseLifecycle:

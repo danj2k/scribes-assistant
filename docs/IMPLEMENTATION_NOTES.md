@@ -43,6 +43,12 @@ This ensures `/stop` does not call `end_session()` (which transitions to QUEUED)
 
 If the callback raises an exception or the future times out, `stop_command` logs the error and proceeds with `end_session()` anyway — partial or no audio is better than a stuck session.
 
+### Empty Recording Handling
+
+When nobody speaks during a recording, `sink.audio_data` is empty. The callback writes zero WAV files, calls `fail_session()` to mark the session as FAILED (with `ended_at` set), and resolves the future with result 0. `stop_command` sees the zero result, sends an ephemeral message to the user ("No audio was captured — no transcript will be generated"), and returns without calling `end_session()`.
+
+The transcriber also has a safety net: before each poll of `get_next_queued_file()`, it queries `get_queued_sessions_without_files()` and marks any sessions stuck in QUEUED with zero audio files as FAILED. This catches edge cases where the callback's `fail_session()` call didn't fire (e.g. callback exception, timeout, or files lost after writing).
+
 ### Timestamp-Based Session IDs
 
 Session IDs are derived from the recording start time: `YYYY-MM-DD_HH-MM-SS`. This makes them human-readable, naturally sorted, and unique (no two sessions can start at the exact same second). Timezone is UTC for consistency.
@@ -100,6 +106,7 @@ These are normal application logic responses, not exceptions. Use `respond()` or
 Errors that cannot be reported to Discord (connection loss, crashes, model failures) are handled as follows:
 
 - **Discord connection lost** — py-cord handles reconnection automatically with exponential backoff. Log a WARNING on each attempt, INFO when reconnected.
+- **Empty recording (nobody spoke)** — the recording callback detects zero audio files, calls `fail_session()` (sets FAILED + ended_at), and resolves the future with 0. `stop_command` informs the user and does not queue for transcription. The transcriber safety net also catches any sessions that slip past the callback.
 - **Transcriber fails mid-job** — update session status to FAILED in SQLite. The bot can check for failed sessions and optionally notify the user. Log the full error traceback.
 - **SQLite lock contention** — WAL mode allows concurrent reads. If a write fails due to a lock, retry with a short backoff (100ms, 3 attempts).
 - **Model not found** — if `/data/models/whisper-{model_size}/` is missing or corrupt, the transcriber logs an ERROR and exits. The bot remains functional but transcription will not proceed until the model is restored. Run `docker compose exec transcriber python scripts/download_model.py --model {model_size}` to re-download.

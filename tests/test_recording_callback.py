@@ -90,10 +90,11 @@ class FakeGuild:
 
 
 class FakeDB:
-    """Minimal DB mock that records add_audio_file calls."""
+    """Minimal DB mock that records add_audio_file and fail_session calls."""
 
     def __init__(self):
         self.audio_files = []
+        self.failed_sessions = []
 
     def add_audio_file(self, session_id, filepath, size_bytes=None,
                        discord_user_id=None, speaker_name=None):
@@ -104,6 +105,9 @@ class FakeDB:
             "discord_user_id": discord_user_id,
             "speaker_name": speaker_name,
         })
+
+    def fail_session(self, session_id):
+        self.failed_sessions.append(session_id)
 
 
 class FakeLogger:
@@ -262,7 +266,8 @@ class TestMakeRecordingAfterCallback:
         after_cb(None)
         await asyncio.wait_for(future, timeout=5.0)
         assert future.done()
-        assert future.result() is None
+        # Future result is the audio file count (1 file in this test)
+        assert future.result() == 1
 
     async def test_future_resolves_on_error(self):
         """The future must resolve even if processing throws an exception."""
@@ -281,7 +286,8 @@ class TestMakeRecordingAfterCallback:
             assert future.done()
 
     async def test_callback_with_no_audio_data(self, mock_file_io):
-        """If nobody spoke, the callback should still complete without error."""
+        """If nobody spoke, the callback marks the session as failed and
+        resolves the future with 0 (zero audio files)."""
         db = FakeDB()
         bot = FakeBot(db)
         sink = FakeSink({})  # No audio data
@@ -294,7 +300,11 @@ class TestMakeRecordingAfterCallback:
         await asyncio.wait_for(future, timeout=5.0)
 
         assert future.done()
+        assert future.result() == 0
         assert len(db.audio_files) == 0
+        # The callback must call fail_session so the session doesn't
+        # stay stuck in RECORDING/QUEUED with no transcript path.
+        assert db.failed_sessions == ["test-session"]
 
     async def test_callback_receives_exception_argument(self, mock_file_io):
         """The sync callback must accept an exception argument (py-cord contract)."""
@@ -378,3 +388,23 @@ class TestMakeRecordingAfterCallback:
         assert len(db2.audio_files) == 1
         assert db1.audio_files[0]["session_id"] == "session-1"
         assert db2.audio_files[0]["session_id"] == "session-2"
+
+    async def test_future_returns_audio_count(self, mock_file_io):
+        """The future result is the number of audio files saved."""
+        db = FakeDB()
+        bot = FakeBot(db)
+        sink = FakeSink({
+            1: FakeAudioData(b"a"),
+            2: FakeAudioData(b"b"),
+            3: FakeAudioData(b"c"),
+        })
+
+        after_cb, future = make_recording_after_callback(
+            bot, "test-session", "123", "456", sink,
+        )
+        after_cb(None)
+        await asyncio.wait_for(future, timeout=5.0)
+
+        assert future.result() == 3
+        # Non-empty recording must NOT call fail_session
+        assert db.failed_sessions == []

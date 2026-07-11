@@ -158,9 +158,10 @@ def setup_commands(bot: commands.Bot):
         # DB — the transcriber would find zero files and produce an empty
         # transcript.
         recording_future = getattr(bot, "_recording_futures", {}).pop(interaction.guild_id, None)
+        audio_count = None
         if recording_future is not None:
             try:
-                await asyncio.wait_for(asyncio.shield(recording_future), timeout=30.0)
+                audio_count = await asyncio.wait_for(asyncio.shield(recording_future), timeout=30.0)
             except asyncio.TimeoutError:
                 bot.logger.warning(
                     f"Session {session_id}: recording callback timed out after 30s, "
@@ -168,6 +169,19 @@ def setup_commands(bot: commands.Bot):
                 )
             except Exception as e:
                 bot.logger.error(f"Session {session_id}: recording callback failed: {e}")
+
+        # If the callback detected zero audio files (nobody spoke), it has
+        # already called fail_session(). Inform the user and don't queue
+        # for transcription.
+        if audio_count == 0:
+            await interaction.response.send_message(
+                f"Recording stopped for session `{session_id}`, but no audio was captured "
+                "(nobody spoke). The session has been marked as failed — "
+                "no transcript will be generated.",
+                ephemeral=True,
+            )
+            bot.logger.info(f"Session {session_id}: stopped with no audio, marked as failed")
+            return
 
         # Mark session as queued for transcription
         db.end_session(session_id)
@@ -421,11 +435,13 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     """
     loop = asyncio.get_running_loop()
     # Future shared between the sync callback and the async processing task.
+    # The result is the number of audio files saved (0 means empty recording).
     # Set when audio processing finishes (or errors out).
     done_future: asyncio.Future = loop.create_future()
 
     async def _process_recording(exc: Exception | None):
         """Process recorded audio and save to disk."""
+        audio_count = 0
         try:
             if exc is not None:
                 bot.logger.error(
@@ -443,7 +459,6 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             rec_dir = f"/data/recordings/{session_id}"
             os.makedirs(rec_dir, exist_ok=True)
 
-            audio_count = 0
             for user_id, audio_data in sink.audio_data.items():
                 filepath = f"{rec_dir}/{user_id}.wav"
 
@@ -473,14 +488,26 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             bot.logger.info(
                 f"Session {session_id}: saved {audio_count} audio file(s) to {rec_dir}"
             )
+
+            # When nobody spoke, the sink has no audio data. Mark the
+            # session as failed immediately so /stop can inform the user
+            # and the transcriber doesn't poll forever for files that
+            # will never arrive.
+            if audio_count == 0:
+                bot.logger.warning(
+                    f"Session {session_id}: no audio captured (nobody spoke?), "
+                    "marking session as failed"
+                )
+                db.fail_session(session_id)
         except Exception as e:
             bot.logger.error(f"Session {session_id}: recording callback failed: {e}")
             raise
         finally:
             # Signal the future regardless of success/failure so /stop
-            # doesn't hang forever waiting.
+            # doesn't hang forever waiting. The result is the audio file
+            # count so /stop can distinguish empty recordings from real ones.
             if not done_future.done():
-                done_future.set_result(None)
+                done_future.set_result(audio_count)
 
     def after_cb(exc: Exception | None) -> None:
         """Synchronous after-callback for py-cord.
