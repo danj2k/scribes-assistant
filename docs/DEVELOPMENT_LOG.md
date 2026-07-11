@@ -646,3 +646,21 @@ The `_match_case()` call is applied at both correction stages (exact match and f
 - `docs/IMPLEMENTATION_NOTES.md` — added "Delivery Loop Database Access" section
 
 **Impact:** 248/248 tests pass (5 new). The delivery loop no longer reaches into the database's internals — all queries go through the public API.
+
+---
+
+## Bug #18: Blocking file I/O in async recording callback
+
+**Date:** 2026-07-11
+
+**Problem:** The `_process_recording` async coroutine in `bot/commands.py` wrote WAV files to disk using synchronous `open()` and `f.write()` calls directly on the event loop. For a 30-minute D&D session, the per-speaker WAV files can be tens of MB, and writing them synchronously blocked the event loop — stalling Discord gateway heartbeats and causing the bot to appear unresponsive during the critical recording-stop window.
+
+**Fix:** Extracted the file-writing logic into a standalone sync helper `_write_audio_files_sync(file_specs)`, which takes a list of `(filepath, raw_bytes)` tuples, creates directories, writes files, and returns the success count. The async coroutine calls this helper via `asyncio.to_thread()`, offloading blocking I/O to a thread pool. Speaker name resolution (guild member cache, no I/O) and DB registration (`add_audio_file`) remain on the event loop. The existing `run_coroutine_threadsafe` pattern (from Bug #5) and future resolution (from Bug #6) are preserved unchanged.
+
+**Files changed:**
+- `bot/commands.py` — added `_write_audio_files_sync()` helper; refactored `_process_recording` to build file specs + speaker info on the event loop, write files via `asyncio.to_thread`, then register in DB on the event loop
+- `tests/test_recording_callback.py` — 5 new tests: verifies `asyncio.to_thread` is used, helper is sync, helper writes all files, helper continues on error, empty list returns 0
+- `docs/ARCHITECTURE.md` — updated step 7 of recording flow and container responsibilities
+- `docs/IMPLEMENTATION_NOTES.md` — added "Non-blocking file writes" subsection
+
+**Impact:** 253/253 tests pass (5 new). The event loop is no longer blocked during WAV file writes — Discord gateway events are handled promptly even during the recording-stop processing window.

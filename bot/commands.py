@@ -3,6 +3,7 @@
 Implements /start, /stop, /status, /session, /invite, /help, /lexicon.
 """
 import asyncio
+import logging
 from datetime import datetime, timezone
 import os
 
@@ -418,6 +419,31 @@ def setup_commands(bot: commands.Bot):
     bot.add_application_command(lexicon_group)
 
 
+def _write_audio_files_sync(file_specs):
+    """Write WAV files to disk synchronously.
+
+    Called via ``asyncio.to_thread`` so the event loop is not blocked
+    while writing potentially large WAV files from a 30-minute session.
+
+    Args:
+        file_specs: list of ``(filepath, raw_bytes)`` tuples.
+
+    Returns the number of files successfully written.
+    """
+    count = 0
+    for filepath, raw_bytes in file_specs:
+        try:
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "wb") as f:
+                f.write(raw_bytes)
+            count += 1
+        except Exception:
+            logging.getLogger("scribes.bot").exception(
+                "Failed to write audio file %s", filepath
+            )
+    return count
+
+
 def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     """Create a py-cord after-callback for recording completion.
 
@@ -459,35 +485,48 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             # so the bot must store speaker identity in the DB now.
             guild = bot.get_guild(int(guild_id)) if hasattr(bot, "get_guild") else None
 
-            # Ensure recording directory exists
             rec_dir = f"/data/recordings/{session_id}"
-            os.makedirs(rec_dir, exist_ok=True)
 
+            # Build the list of files to write. Speaker name resolution
+            # touches the guild member cache (fast, no I/O) so it stays
+            # on the event loop. Only the actual WAV writes — which can
+            # be tens of MB for a 30-minute session — are offloaded to a
+            # thread via asyncio.to_thread.
+            file_specs = []
+            speaker_info = []  # (discord_user_id, speaker_name, size_bytes)
             for user_id, audio_data in sink.audio_data.items():
                 filepath = f"{rec_dir}/{user_id}.wav"
+                raw_bytes = audio_data.getbuffer()
+                file_specs.append((filepath, bytes(raw_bytes)))
 
-                # audio_data is a BytesIO object containing WAV data
-                with open(filepath, "wb") as f:
-                    f.write(audio_data.getbuffer())
-
-                # Resolve speaker display name from guild member cache.
-                # user_id is an int (Discord user ID); fall back to str(id)
-                # if the member has left the guild or the cache is cold.
                 speaker_name = str(user_id)
                 if guild is not None:
                     member = guild.get_member(user_id)
                     if member is not None:
                         speaker_name = member.display_name
 
-                size = audio_data.getbuffer().nbytes
+                speaker_info.append(
+                    (str(user_id), speaker_name, raw_bytes.nbytes)
+                )
+
+            # Offload blocking file writes to a thread pool so the
+            # event loop can continue handling Discord gateway events.
+            audio_count = await asyncio.to_thread(
+                _write_audio_files_sync, file_specs
+            )
+
+            # Register the files in the DB now that they're on disk.
+            for i, (discord_user_id, speaker_name, size_bytes) in enumerate(
+                speaker_info
+            ):
+                filepath = file_specs[i][0]
                 db.add_audio_file(
                     session_id=session_id,
                     filepath=filepath,
-                    size_bytes=size,
-                    discord_user_id=str(user_id),
+                    size_bytes=size_bytes,
+                    discord_user_id=discord_user_id,
                     speaker_name=speaker_name,
                 )
-                audio_count += 1
 
             bot.logger.info(
                 f"Session {session_id}: saved {audio_count} audio file(s) to {rec_dir}"

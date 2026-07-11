@@ -62,6 +62,10 @@ The bot uses `make_recording_after_callback()` to create a sync callback that:
 
 This ensures `/stop` does not call `end_session()` (which transitions to QUEUED) until all audio files have been written to disk and registered in the `audio_files` table. Without this, the transcriber could find zero files for a session and produce an empty transcript.
 
+#### Non-blocking file writes
+
+The async processing coroutine (`_process_recording`) runs on the event loop. WAV file writes — which can be tens of MB for a 30-minute session — are offloaded to a thread pool via `asyncio.to_thread(_write_audio_files_sync, file_specs)`. The sync helper `_write_audio_files_sync` iterates the file specs, creates directories, writes bytes, and returns the count of successfully written files. Speaker name resolution (guild member cache lookup, no I/O) and DB registration (`add_audio_file`) remain on the event loop. This prevents blocking the event loop during file I/O, which would stall Discord gateway heartbeats and cause the bot to appear unresponsive.
+
 If the callback raises an exception or the future times out, `stop_command` logs the error and proceeds with `end_session()` anyway — partial or no audio is better than a stuck session.
 
 ### Empty Recording Handling

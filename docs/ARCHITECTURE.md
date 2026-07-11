@@ -17,7 +17,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Connect to Discord gateway via py-cord
 - Respond to slash commands (/start, /stop, /status, /session, /help, /invite, /lexicon)
 - Join voice channels and capture per-speaker audio
-- Write WAV audio segments to the shared volume via a sync after-callback that schedules async processing on the event loop
+- Write WAV audio segments to the shared volume via a sync after-callback that schedules async processing on the event loop, with file writes offloaded to a thread pool via asyncio.to_thread
 - Resolve speaker display names from the guild member cache at recording stop time
 - Await audio file registration before transitioning session to QUEUED
 - Record session metadata in the SQLite queue
@@ -118,7 +118,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 4. Bot creates a sync after-callback (via make_recording_after_callback) that captures the sink and schedules async audio processing on the event loop, returning a future
 5. Bot starts recording with the sink and callback
 6. User issues /stop → bot calls stop_recording(), which synchronously invokes the after-callback
-7. The after-callback schedules audio processing (writing WAV files, resolving speaker names from the guild member cache, registering files in audio_files with discord_user_id + speaker_name) via run_coroutine_threadsafe
+7. The after-callback schedules audio processing via run_coroutine_threadsafe. The async processor resolves speaker names from the guild member cache (fast, no I/O), then offloads WAV file writes to a thread pool via asyncio.to_thread so the event loop can continue handling Discord gateway events. DB registration (add_audio_file) happens on the event loop after the writes complete.
 8. /stop awaits the future with a 30-second timeout, ensuring all audio files are written and registered before proceeding
 9. If the future resolves with 0 audio files (nobody spoke), the callback has already called fail_session() — /stop informs the user and returns without queuing for transcription
 10. Otherwise, /stop calls end_session() which sets status to QUEUED — the transcriber is guaranteed to find all audio files already registered
