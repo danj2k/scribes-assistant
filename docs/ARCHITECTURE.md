@@ -152,6 +152,7 @@ Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 
 ## Configuration
 
 - `config.yaml` — mounted into both containers, controls model selection, thread settings, lexicon defaults. Defaults are defined in `shared/config.py` (`_DEFAULTS`) and deep-copied on each `load_config()` call so mutations to returned config cannot corrupt global state.
+- `shared/tar_utils.py` — safe tarfile extraction with path-traversal protection, used by both the transcriber worker and the standalone download script. Validates each member's destination path before extraction and rejects absolute paths, `..` traversal, and symlinks escaping the target directory.
 - Docker secrets — bot token and any other sensitive values, mounted at `/run/secrets/`. The bot validates the token file at startup: if the file is missing or empty, `main()` logs a clear error and exits rather than passing `None` to `bot.run()` (which produces a cryptic py-cord traceback).
 
 ## Dependencies

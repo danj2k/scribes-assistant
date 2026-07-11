@@ -21,6 +21,8 @@ import tarfile
 from pathlib import Path
 from typing import Optional
 
+from shared.tar_utils import safe_extract_members
+
 # sherpa-onnx Whisper model URL template (model size is interpolated at runtime)
 DEFAULT_MODEL_URL_TEMPLATE = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
@@ -147,16 +149,13 @@ def download_model(
             )
         print(f"  Hash verified: {actual_hash[:16]}...")
 
-    # Extract
+    # Extract — path traversal protection via safe_extract_members
     print("  Extracting archive...")
     try:
         with tarfile.open(archive_path, "r:bz2") as tar:
-            for member in tar.getmembers():
-                # Strip the top-level directory name if present
-                parts = member.name.split("/", 1)
-                if len(parts) > 1:
-                    member.name = parts[1]
-                tar.extract(member, model_path)
+            safe_extract_members(tar, str(model_path), strip_components=1)
+    except ValueError as e:
+        raise RuntimeError(f"Extraction failed (unsafe path): {e}") from e
     except Exception as e:
         raise RuntimeError(f"Extraction failed: {e}") from e
     finally:

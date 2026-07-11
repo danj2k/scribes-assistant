@@ -67,7 +67,7 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             # member.name has been stripped to just the filename (e.g. "small-encoder.onnx")
             (Path(path) / member.name).write_bytes(b"extracted")
 
@@ -113,7 +113,7 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             # Only create one of the three required files
             (Path(path) / member.name).write_bytes(b"partial")
 
@@ -147,7 +147,7 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             # member.name has been stripped to just the filename (e.g. "small-encoder.onnx")
             (Path(path) / member.name).write_bytes(b"extracted")
 
@@ -217,7 +217,7 @@ class TestSha256Verification:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             # member.name has been stripped to just the filename (e.g. "small-encoder.onnx")
             (Path(path) / member.name).write_bytes(b"extracted")
 
@@ -251,7 +251,7 @@ class TestSha256Verification:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_urlretrieve.side_effect = fake_urlretrieve

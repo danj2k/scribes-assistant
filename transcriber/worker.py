@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 
+from shared.tar_utils import safe_extract_members
+
 # Module-level imports for testability -- tests patch these names
 try:
     import sherpa_onnx
@@ -312,15 +314,12 @@ def download_model(model_dir: str, model_url: Optional[str] = None,
             )
         logger.info("Hash verified: %s...", actual_hash[:16])
 
-    # Extract
+    # Extract — path traversal protection via safe_extract_members
     try:
         with tarfile.open(tar_path, "r:bz2") as tar:
-            for member in tar.getmembers():
-                # Strip the top-level directory name if present
-                parts = member.name.split("/", 1)
-                if len(parts) > 1:
-                    member.name = parts[1]
-                tar.extract(member, model_path)
+            safe_extract_members(tar, str(model_path), strip_components=1)
+    except ValueError as e:
+        raise RuntimeError(f"Model extraction failed (unsafe path): {e}") from e
     except Exception as e:
         raise RuntimeError(f"Model extraction failed: {e}") from e
     finally:

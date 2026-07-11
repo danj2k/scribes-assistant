@@ -128,7 +128,7 @@ class TestDownloadModel:
         """download_model creates the model directory."""
         from transcriber.worker import download_model
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_tar = MagicMock()
@@ -159,7 +159,7 @@ class TestDownloadModel:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
@@ -273,7 +273,7 @@ class TestSha256Verification:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
@@ -311,7 +311,7 @@ class TestSha256Verification:
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
 
-        def fake_extract(member, path):
+        def fake_extract(member, path, **kwargs):
             (Path(path) / member.name).write_bytes(b"fake model data")
 
         mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve

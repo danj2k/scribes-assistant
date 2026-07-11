@@ -483,3 +483,44 @@ SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt` for interactive use, pr
 - `test_flag_resets`: The flag can be reset for clean test isolation.
 
 **Impact:** `docker stop scribes-transcriber` now triggers a clean shutdown — the current transcription (if any) completes, the database is closed, and the process exits 0. 195/195 tests pass.
+
+
+## Bug #12 — tarfile extraction without path traversal protection (moderate)
+
+**Commit:** (pending)
+
+**Problem:** Both `transcriber/worker.py` (`download_model()`) and `scripts/download_model.py` extracted tar archives by calling `tar.extract(member, path)` in a loop with no path validation. A malicious or corrupted archive could contain members with paths like `../../../etc/passwd` or absolute paths like `/tmp/evil`, allowing files to be written outside the model directory — a classic path traversal vulnerability.
+
+The old extraction code only stripped the top-level directory component from each member name, then passed it directly to `tarfile.extract()`. No check was made on whether the resulting path stayed within the extraction directory.
+
+**Fix:** Created `shared/tar_utils.py` with two functions:
+
+- `_validate_member_path(member, extract_dir, strip_components)` — validates a single tar member's destination path. Rejects absolute paths, `..` traversal, and symlinks with targets that escape the extraction directory. Returns `None` for top-level directory entries (which should be skipped) or the resolved destination `Path`.
+
+- `safe_extract_members(tar, extract_dir, strip_components=1)` — iterates all members, validates each one, and extracts only those that pass validation. On Python 3.12+, passes `filter='data'` to `tarfile.extract()` for an additional safety layer. On Python 3.11 (the Docker base image), the manual validation in `_validate_member_path()` provides equivalent protection.
+
+Both `transcriber/worker.py` and `scripts/download_model.py` now import and call `safe_extract_members()` instead of the bare `tar.extract()` loop. The `strip_components=1` parameter preserves the previous behaviour of stripping the top-level archive directory.
+
+Extraction is fail-closed: if any member has an unsafe path, a `ValueError` is raised and extraction halts immediately. The caller catches this and re-raises as `RuntimeError` with a descriptive message.
+
+**Tests (tests/test_tarfile_safety.py):**
+- `test_normal_relative_path_strips_one_component` — normal `dir/file.onnx` extracts as `file.onnx`
+- `test_nested_relative_path_strips_one_component` — nested paths preserved after stripping
+- `test_top_level_directory_entry_returns_none` — top-level dir entries are skipped
+- `test_absolute_path_rejected` — `/etc/passwd` raises `ValueError`
+- `test_parent_traversal_rejected` — `../../etc/passwd` raises `ValueError`
+- `test_parent_traversal_after_strip_rejected` — traversal in the remaining path after stripping is caught
+- `test_symlink_with_absolute_target_rejected` — symlink to `/etc/passwd` rejected
+- `test_symlink_with_traversal_target_rejected` — symlink with `../../` target rejected
+- `test_safe_symlink_within_dir_allowed` — symlink to a relative path within the dir is allowed
+- `test_extracts_normal_archive` — a real legitimate archive extracts correctly
+- `test_rejects_path_traversal_member` — an archive with a traversal entry raises `ValueError`
+- `test_rejects_absolute_path_member` — an archive with an absolute path raises `ValueError`
+- `test_rejects_symlink_escape` — an archive with an escaping symlink raises `ValueError`
+- `test_empty_archive_returns_empty_list` — only-dir archive returns `[]`
+- `test_preserves_nested_directory_structure` — subdirectories are created correctly
+- `test_strip_components_zero` — `strip_components=0` keeps full paths
+
+Existing `fake_extract` test mocks in `test_transcriber_worker.py` and `test_download_model.py` updated to accept `**kwargs` (the `filter` keyword argument passed on Python 3.12+).
+
+**Impact:** Model archive extraction is now safe against path traversal attacks. 211/211 tests pass.

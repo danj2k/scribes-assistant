@@ -74,6 +74,21 @@ The `_sha256_file()` helper reads in 8KB chunks to handle large files without ex
 
 To add a hash for a new model size, download the archive, run `_sha256_file()` against it, and add the entry to `EXPECTED_SHA256` in `transcriber/worker.py`.
 
+### Safe Tar Extraction
+
+Model archives are extracted using `safe_extract_members()` from `shared/tar_utils.py`. This provides path-traversal protection that the bare `tarfile.extract()` call does not — without it, a malicious or corrupted archive could write files outside the target directory (e.g. `../../etc/passwd`).
+
+The validation logic rejects:
+- Absolute paths (`/etc/passwd`)
+- Parent-directory traversal (`../../../tmp/evil`)
+- Symlinks or hardlinks with targets that escape the extraction directory
+
+On Python 3.12+, `tarfile.extract()` is called with `filter='data'` for an additional layer of protection. On Python 3.11 (the Docker base image), the manual validation in `_validate_member_path()` provides equivalent protection.
+
+The `strip_components=1` parameter strips the top-level archive directory (e.g. `sherpa-onnx-whisper-small/small-encoder.onnx` becomes `small-encoder.onnx`), preserving the previous behaviour while adding the safety check.
+
+Extraction is fail-closed: if any member has an unsafe path, a `ValueError` is raised and extraction halts. A partial extraction is preferable to silently writing outside the target directory.
+
 
 ### Transcript Delivery
 
