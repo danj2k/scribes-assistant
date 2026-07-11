@@ -3,6 +3,7 @@ PyYAML>=6.0
 numpy>=1.24.0
 soundfile>=0.12.0
 sherpa-onnx>=1.10.0
+Levenshtein>=0.21.0
 
 # Shared package (installed as editable in Docker)
 # -e ../shared

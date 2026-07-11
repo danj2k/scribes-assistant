@@ -21,7 +21,8 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Resolve speaker display names from the guild member cache at recording stop time
 - Await audio file registration before transitioning session to QUEUED
 - Record session metadata in the SQLite queue
-- Poll for completed transcripts and upload them to Discord
+- Poll for completed transcripts and upload them to Discord (no lexicon correction — the transcriber applies corrections before storing)
+- Manage lexicon entries via /lexicon commands (add, list, remove — CRUD only; fuzzy correction is the transcriber's job)
 
 **Key dependencies:**
 - py-cord 2.8.0 (Discord API, voice receive)
@@ -36,16 +37,18 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 
 **Responsibilities:**
 - Poll the SQLite queue for sessions with status QUEUED
-- Load the lexicon from SQLite
+- Load the lexicon for hotwords bias and post-transcription fuzzy correction
 - Run sherpa-onnx Whisper transcription with initial prompt injection
+- Apply lexicon fuzzy correction (Levenshtein distance) to each segment's text before storing in the database
 - Capture token-level timestamps for interleaved transcript merging
-- Store per-file transcript segments in the database
+- Store corrected per-file transcript segments in the database
 - Merge all speakers' segments chronologically after ALL files are transcribed
-- Format and save the merged transcript as plain text
+- Format and save the merged transcript as plain text (already corrected)
 - Update session status to COMPLETE in the SQLite queue via set_transcript_path()
 
 **Key dependencies:**
 - sherpa-onnx (speech-to-text, Whisper — model size configurable, default "small")
+- Levenshtein (fuzzy string matching for post-transcription lexicon correction)
 - ffmpeg (audio conversion to 16kHz mono WAV)
 - SQLite3 (queue and lexicon access)
 
@@ -124,19 +127,19 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 1. Transcriber polls queue, finds session with status QUEUED
 2. Safety net: queries get_queued_sessions_without_files() and marks any queued sessions with zero audio files as FAILED (catches empty recordings that slipped past the callback)
 3. Updates the audio file status to TRANSCRIBING
-4. Loads lexicon from SQLite, builds initial prompt string
+4. Loads lexicon from YAML file, builds hotwords string for the recogniser and keeps the Lexicon instance for post-transcription correction
 5. Converts WAV files to 16kHz mono via ffmpeg
-6. Runs sherpa-onnx Whisper model (size from config, default "small") with initial prompt
+6. Runs sherpa-onnx Whisper model (size from config, default "small") with hotwords bias
 7. Captures token-level timestamps from the recogniser result
-8. Groups tokens into segments and stores them in the transcript_segments table with the speaker's name
+8. Groups tokens into segments, applies lexicon fuzzy correction (Levenshtein distance) to each segment's text, and stores corrected segments in the transcript_segments table with the speaker's name
 9. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue
-10. Writes the merged transcript to /data/transcripts/<session_id>.txt
+10. Writes the merged transcript to /data/transcripts/<session_id>.txt (already corrected)
 11. Updates session status to COMPLETE via set_transcript_path()
 
 ### Delivery (bot-driven)
 
 1. Bot polls queue, finds session with status COMPLETE and transcript_path set
-2. Reads transcript file from shared volume
+2. Reads the already-corrected transcript file from shared volume (no lexicon correction in the delivery loop)
 3. Uploads as Discord file attachment to the transcript channel
 4. Updates status to DELIVERED (or marks as complete)
 

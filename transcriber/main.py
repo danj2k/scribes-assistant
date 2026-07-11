@@ -7,6 +7,7 @@ transcription, and stores results for the bot's delivery loop.
 import sys
 import time
 import signal
+import re
 import logging
 import logging.handlers
 import asyncio
@@ -88,6 +89,29 @@ def _build_interleaved_transcript(db: Database, session_id: str) -> str:
     return "\n\n".join(blocks)
 
 
+def _correct_text(text: str, lexicon: Lexicon | None) -> str:
+    """Apply lexicon fuzzy correction to transcribed text.
+
+    Splits on word boundaries, corrects each word independently, and
+    reassembles with original whitespace/punctuation preserved. Words
+    not in the lexicon pass through unchanged.
+
+    This runs in the transcriber, not the bot's delivery loop, so the
+    corrected text is what gets stored in the database and written to
+    the transcript file. The bot's delivery loop simply reads and
+    uploads the already-corrected transcript.
+    """
+    if not lexicon or not lexicon.terms:
+        return text
+
+    def _replace_word(match):
+        word = match.group(0)
+        corrected = lexicon.correct(word)
+        return corrected if corrected else word
+
+    return re.sub(r"\b\w+\b", _replace_word, text)
+
+
 def setup_logging(config: Config):
     """Configure root logger with console (stdout) and rotating file handlers.
 
@@ -131,18 +155,26 @@ def run_worker(config_path: str = "/app/config.yaml"):
 
     db = Database(config.database_path)
 
-    # Load lexicon for hotwords
+    # Load lexicon for hotwords and post-transcription correction.
+    # The same Lexicon instance serves both purposes: hotwords bias the
+    # recogniser during transcription, and correct() applies fuzzy
+    # matching to fix misrecognised words after transcription.
+    # Correction runs here (transcriber side), not in the bot's delivery
+    # loop — the bot only manages lexicon entries via /lexicon commands.
     hotwords = ""
+    correction_lexicon: Lexicon | None = None
     if config.lexicon_enabled:
         try:
             lexicon = Lexicon(config.lexicon_file, config.lexicon_threshold)
             terms = lexicon.get_terms_list()
             hotwords = build_hotwords(terms)
+            correction_lexicon = lexicon
             logger.info(
-                "Loaded %d lexicon terms for hotwords bias", len(terms)
+                "Loaded %d lexicon terms for hotwords bias and post-correction",
+                len(terms),
             )
         except Exception as e:
-            logger.warning("Could not load lexicon, hotwords disabled: %s", e)
+            logger.warning("Could not load lexicon, hotwords and correction disabled: %s", e)
 
     # Download model if not present
     download_model(config.model_path, model_size=config.model_size)
@@ -198,18 +230,23 @@ def run_worker(config_path: str = "/app/config.yaml"):
                 # speaker's audio file. Since all speakers' WAV files share
                 # the same zero point (recording starts at /start), segments
                 # from different files can be merged chronologically.
+                # Apply lexicon fuzzy correction to each segment's text
+                # before storing so the corrected text is what gets merged
+                # and delivered.
                 for seq, segment in enumerate(result.segments):
+                    corrected_text = _correct_text(segment.text, correction_lexicon)
                     db.add_transcript_segment(
                         session_id=session_id,
                         file_id=file_id,
                         start_time=segment.start_time,
-                        text=segment.text,
+                        text=corrected_text,
                         seq=seq,
                     )
 
                 # Also store the full text on the audio file row as a
                 # fallback for when timestamp segments aren't available.
-                db.add_transcript(file_id, result.text)
+                corrected_full_text = _correct_text(result.text, correction_lexicon)
+                db.add_transcript(file_id, corrected_full_text)
 
                 logger.info(f"File {file_id} transcribed successfully")
 

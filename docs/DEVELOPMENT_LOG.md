@@ -524,3 +524,29 @@ Extraction is fail-closed: if any member has an unsafe path, a `ValueError` is r
 Existing `fake_extract` test mocks in `test_transcriber_worker.py` and `test_download_model.py` updated to accept `**kwargs` (the `filter` keyword argument passed on Python 3.12+).
 
 **Impact:** Model archive extraction is now safe against path traversal attacks. 211/211 tests pass.
+
+---
+
+## Bug #13 — Levenshtein missing from requirements + lexicon architecture fix
+
+**Date:** 2026-07-11
+
+**Problem:** The `Levenshtein` package was an optional import in `shared/lexicon.py` but was missing from `transcriber/requirements.txt`. Without it installed, `Lexicon.correct()` always returns `None` for non-exact matches, making the fuzzy post-correction dead code. Additionally, the correction logic lived in `bot/delivery.py` (`DeliveryLoop._correct_text()`), which was architecturally wrong — the bot should only manage lexicon entries (CRUD via `/lexicon` commands), while the transcriber should apply corrections.
+
+**Fix:**
+
+1. **Moved `_correct_text()` from `bot/delivery.py` to `transcriber/main.py`** — correction now runs in the transcriber after each audio file is transcribed, before segments are stored in the database. The corrected text is what gets merged and written to the transcript file.
+
+2. **Removed lexicon loading from `DeliveryLoop.__init__`** — the delivery loop no longer creates a `Lexicon` instance or applies correction. It just reads the already-corrected transcript file and uploads it to Discord. Removed the `re` and `shared.lexicon` imports from `bot/delivery.py`.
+
+3. **Added `Levenshtein>=0.21.0` to `transcriber/requirements.txt`** — the transcriber container now installs the dependency required for fuzzy correction. The bot's `requirements.txt` does not include Levenshtein (it doesn't need it).
+
+4. **Updated `transcriber/main.py` `run_worker()`** — the lexicon loaded for hotwords is now reused as `correction_lexicon`. Each segment's text is passed through `_correct_text(segment.text, correction_lexicon)` before `db.add_transcript_segment()`. The full text fallback also gets corrected before `db.add_transcript()`.
+
+**Architectural principle:** `correct()` is the transcriber's responsibility — it applies fuzzy matching to fix misrecognised words after transcription. The bot's lexicon interactions are limited to CRUD: `/lexicon add`, `/lexicon list`, `/lexicon remove`. This keeps the correction logic in the service that has the Levenshtein dependency and the transcribed text, rather than in the delivery loop where it was a secondary concern.
+
+**Tests:**
+- `TestTranscriberCorrectText` (5 tests) — moved from `TestDeliveryLoopLexicon`, now tests `transcriber.main._correct_text()` with the same scenarios (basic correction, no match, whitespace preservation, empty lexicon, None lexicon)
+- `TestDeliveryLoopNoLexicon` (3 tests) — verifies `DeliveryLoop` no longer has `_lexicon` attribute, `_correct_text` method, or imports `Lexicon`
+
+**Impact:** Fuzzy correction is no longer dead code. The transcriber applies corrections before storing transcripts. The bot's delivery loop is simplified — it just reads and uploads. 214/214 tests pass.

@@ -21,8 +21,10 @@ The lexicon improves transcription quality through two independent mechanisms:
 **Stage 1: Hotwords bias (before transcription)**
 The lexicon terms are formatted by `build_hotwords()` into a forward-slash separated string: `"Term1/Term2/Term3"`. This is passed to sherpa-onnx via `create_stream(hotwords=...)`. Hotwords are a hard decoding bias — the model is strongly biased toward recognising these terms during transcription. Capped at 100 terms to stay within sherpa-onnx token limits.
 
-**Stage 2: Fuzzy post-correction (after transcription)**
-When the transcript is delivered, `DeliveryLoop._correct_text()` applies Levenshtein-based fuzzy matching to every word. Each word is checked against the lexicon — if a close match exists (within 50% of the word's length), it's corrected to the canonical form. This catches misrecognitions that the initial prompt didn't prevent.
+**Stage 2: Fuzzy post-correction (after transcription, transcriber side)**
+After each audio file is transcribed, `transcriber/main.py`'s `_correct_text()` applies Levenshtein-based fuzzy matching to every word in each segment. Each word is checked against the lexicon — if a close match exists (within the configured threshold), it's corrected to the canonical form. The corrected text is what gets stored in the database and written to the transcript file.
+
+This runs in the transcriber, not the bot's delivery loop, so the corrected text is persisted before delivery. The bot's `/lexicon` commands manage the YAML file (add, list, remove) — the bot does not call `correct()`.
 
 Both stages use the same YAML lexicon file (`/data/lexicon.yaml`). Terms added via `/lexicon add` are immediately available for both stages in future sessions.
 

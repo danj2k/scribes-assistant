@@ -59,91 +59,92 @@ class TestTranscriptionWorkerHotwords:
             w.recognizer.create_stream.assert_called_once_with(hotwords="")
 
 
-class TestDeliveryLoopLexicon:
-    """Test that DeliveryLoop loads lexicon and applies correction."""
+class TestTranscriberCorrectText:
+    """Test _correct_text in transcriber/main.py applies lexicon correction."""
+
+    def _make_lexicon(self, terms_dict):
+        """Create a Lexicon instance without loading from file."""
+        lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.2
+        lex.terms = terms_dict
+        return lex
 
     def test_correct_text_basic(self):
         """Words matching lexicon exactly are corrected to canonical form."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        bot.config.lexicon_file = "/tmp/test_lex.yaml"
+        from transcriber.main import _correct_text
 
-        # Create a temp lexicon
-        lex = Lexicon.__new__(Lexicon)
-        lex._fuzzy_threshold = 0.2
-        lex.terms = {
+        lex = self._make_lexicon({
             "theron": {"term": "Theron", "description": "A noble elf name"},
             "grimjaw": {"term": "Grimjaw", "description": "Dwarf name"},
-        }
+        })
 
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        loop._lexicon = lex
-
-        result = loop._correct_text("theron said hello to grimjaw")
+        result = _correct_text("theron said hello to grimjaw", lex)
         assert result == "Theron said hello to Grimjaw"
 
     def test_correct_text_no_match(self):
         """Words not in lexicon pass through unchanged."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        bot.config.lexicon_file = "/tmp/test_lex.yaml"
+        from transcriber.main import _correct_text
 
-        lex = Lexicon.__new__(Lexicon)
-        lex._fuzzy_threshold = 0.2
-        lex.terms = {"theron": {"term": "Theron", "description": "elf"}}
+        lex = self._make_lexicon({"theron": {"term": "Theron", "description": "elf"}})
 
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        loop._lexicon = lex
-
-        result = loop._correct_text("the dragon attacked the village")
+        result = _correct_text("the dragon attacked the village", lex)
         assert result == "the dragon attacked the village"
 
     def test_correct_text_preserves_whitespace(self):
         """Whitespace and punctuation around words are preserved."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        bot.config.lexicon_file = "/tmp/test_lex.yaml"
+        from transcriber.main import _correct_text
 
-        lex = Lexicon.__new__(Lexicon)
-        lex._fuzzy_threshold = 0.2
-        lex.terms = {"theron": {"term": "Theron", "description": "elf"}}
+        lex = self._make_lexicon({"theron": {"term": "Theron", "description": "elf"}})
 
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        loop._lexicon = lex
-
-        result = loop._correct_text("  Theron  said: 'hello!'")
+        result = _correct_text("  Theron  said: 'hello!'", lex)
         # Exact words are case-insensitive matched and corrected
         assert "Theron" in result
 
     def test_correct_text_empty_lexicon(self):
         """Empty lexicon returns text unchanged."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        bot.config.lexicon_file = "/tmp/test_lex.yaml"
+        from transcriber.main import _correct_text
 
-        lex = Lexicon.__new__(Lexicon)
-        lex._fuzzy_threshold = 0.2
-        lex.terms = {}
-
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        loop._lexicon = lex
+        lex = self._make_lexicon({})
 
         text = "theron said hello"
-        result = loop._correct_text(text)
+        result = _correct_text(text, lex)
         assert result == text
 
     def test_correct_text_none_lexicon(self):
-        """No lexicon loaded returns text unchanged."""
-        from bot.delivery import DeliveryLoop
-        bot = MagicMock()
-        bot.config.lexicon_file = "/tmp/test_lex.yaml"
-
-        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
-        loop._lexicon = None
+        """No lexicon loaded (None) returns text unchanged."""
+        from transcriber.main import _correct_text
 
         text = "theron said hello"
-        result = loop._correct_text(text)
+        result = _correct_text(text, None)
         assert result == text
+
+
+class TestDeliveryLoopNoLexicon:
+    """Verify DeliveryLoop no longer imports or uses Lexicon for correction.
+
+    Bug #13: correction moved from bot/delivery.py to transcriber/main.py.
+    The bot's delivery loop just reads the already-corrected transcript
+    and posts it to Discord — it does not apply lexicon correction.
+    """
+
+    def test_delivery_loop_has_no_lexicon_attribute(self):
+        """DeliveryLoop should not have a _lexicon attribute."""
+        from bot.delivery import DeliveryLoop
+        bot = MagicMock()
+        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
+        assert not hasattr(loop, "_lexicon")
+
+    def test_delivery_loop_has_no_correct_text_method(self):
+        """DeliveryLoop should not have a _correct_text method."""
+        from bot.delivery import DeliveryLoop
+        bot = MagicMock()
+        loop = DeliveryLoop(bot, MagicMock(), MagicMock())
+        assert not hasattr(loop, "_correct_text")
+
+    def test_delivery_loop_does_not_import_lexicon(self):
+        """bot.delivery module should not import Lexicon."""
+        import bot.delivery as delivery_mod
+        assert not hasattr(delivery_mod, "Lexicon")
 
 
 class TestBuildHotwords:
