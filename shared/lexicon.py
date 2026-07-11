@@ -43,6 +43,27 @@ def _get_spell_checker():
     return _spell_checker
 
 
+def _match_case(original: str, replacement: str) -> str:
+    """Apply *original*'s casing pattern to *replacement*.
+
+    - All uppercase → replacement.upper()  (e.g. "THERON" → "THERON")
+    - Title case (first upper, rest lower) → replacement title-cased
+      (e.g. "Theron" → "Theron")
+    - All lowercase → replacement as-is (canonical form from lexicon)
+      (e.g. "theron" → "Theron")
+
+    For any other mixed casing (e.g. "tHeRoN"), the canonical form
+    from the lexicon is returned unchanged — trying to replicate
+    arbitrary casing patterns would produce nonsense for proper nouns.
+    """
+    if original.isupper() and len(original) > 1:
+        return replacement.upper()
+    if original[0].isupper() and original[1:].islower():
+        return replacement[0].upper() + replacement[1:].lower()
+    # All lowercase or unusual mixed casing — use canonical form.
+    return replacement
+
+
 class Lexicon:
     """In-memory lexicon with file persistence.
 
@@ -161,7 +182,7 @@ class Lexicon:
         # lexicon terms (e.g. "theron" → "Theron"), including terms
         # that happen to appear in English dictionaries.
         if key in self.terms:
-            return self.terms[key]["term"]
+            return _match_case(word, self.terms[key]["term"])
 
         # Stage 2: English dictionary gate.
         # If the word is a recognised English word, it should NOT be
@@ -192,8 +213,8 @@ class Lexicon:
                 best_term = entry["term"]
 
         # Only correct when distance is within configured threshold proportion
-        if best_distance <= max(int(len(key) * self._fuzzy_threshold), 1):
-            return best_term
+        if best_term is not None and best_distance <= max(int(len(key) * self._fuzzy_threshold), 1):
+            return _match_case(word, best_term)
         return None
 
     # -- term list ----------------------------------------------------------

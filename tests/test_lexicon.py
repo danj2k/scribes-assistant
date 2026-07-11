@@ -224,3 +224,79 @@ class TestDictionaryGate:
         with patch("shared.lexicon._get_spell_checker", return_value=None):
             result = lex.correct("theron")
             assert result == "Theron"
+
+
+class TestMatchCase:
+    """Tests for case preservation in correct() — Bug #15.
+
+    The casing of the original transcribed word should be preserved
+    when applying a correction, so that shouting ("THERON") and
+    title case ("Theron") are respected rather than always being
+    replaced by the lexicon's canonical form.
+    """
+
+    def _make_lexicon(self, terms_dict, threshold=0.5):
+        """Create a Lexicon without loading from file."""
+        lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = threshold
+        lex.terms = terms_dict
+        return lex
+
+    def test_all_caps_preserved_on_exact_match(self):
+        """All-uppercase word keeps all-caps after exact-match correction."""
+        lex = self._make_lexicon({"theron": {"term": "Theron"}})
+        result = lex.correct("THERON")
+        assert result == "THERON", f"Expected 'THERON', got {result!r}"
+
+    def test_title_case_preserved_on_exact_match(self):
+        """Title-case word stays title-case after exact-match correction."""
+        lex = self._make_lexicon({"theron": {"term": "Theron"}})
+        result = lex.correct("Theron")
+        assert result == "Theron", f"Expected 'Theron', got {result!r}"
+
+    def test_lowercase_returns_canonical_on_exact_match(self):
+        """All-lowercase word gets canonical form (capitalised) from lexicon."""
+        lex = self._make_lexicon({"theron": {"term": "Theron"}})
+        result = lex.correct("theron")
+        assert result == "Theron", f"Expected 'Theron', got {result!r}"
+
+    def test_all_caps_preserved_on_fuzzy_match(self):
+        """All-uppercase word keeps all-caps after fuzzy correction."""
+        lex = self._make_lexicon({"theron": {"term": "Theron"}})
+        # "theran" is not English, distance 1 from "theron"
+        result = lex.correct("THERAN")
+        assert result == "THERON", f"Expected 'THERON', got {result!r}"
+
+    def test_title_case_preserved_on_fuzzy_match(self):
+        """Title-case word gets title-cased correction after fuzzy match."""
+        lex = self._make_lexicon({"theron": {"term": "Theron"}})
+        result = lex.correct("Theran")
+        assert result == "Theron", f"Expected 'Theron', got {result!r}"
+
+    def test_mixed_casing_returns_canonical(self):
+        """Unusual mixed casing falls back to canonical form."""
+        lex = self._make_lexicon({"theron": {"term": "Theron"}})
+        result = lex.correct("tHeRoN")
+        assert result == "Theron", f"Expected canonical 'Theron', got {result!r}"
+
+    def test_single_char_uppercase_returns_canonical(self):
+        """Single uppercase char is treated as title case, not all-caps."""
+        lex = self._make_lexicon({"a": {"term": "Ablach"}})
+        # Single char: "A" is both isupper() and title — _match_case
+        # treats len==1 isupper as title case (not shouting).
+        result = lex.correct("A")
+        # "A" is title case → title-cased "Ablach"
+        assert result == "Ablach", f"Expected 'Ablach', got {result!r}"
+
+    def test_case_preservation_with_hyphenated_lexicon_term(self):
+        """Case preservation works with hyphenated terms via _correct_text."""
+        from transcriber.main import _correct_text
+        lex = self._make_lexicon({
+            "grim-jaw": {"term": "Grim-jaw", "description": "Dwarf fighter"},
+        })
+        # All-caps shouting
+        result = _correct_text("GRIM-JAW attacked", lex)
+        assert result == "GRIM-JAW attacked", f"Got: {result!r}"
+        # Title case
+        result = _correct_text("Grim-jaw attacked", lex)
+        assert result == "Grim-jaw attacked", f"Got: {result!r}"
