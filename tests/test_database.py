@@ -71,6 +71,53 @@ class TestSessionManagement:
         active = db.get_active_session("999999")
         assert active is None
 
+    def test_get_any_active_session_finds_across_guilds(self, db):
+        """get_any_active_session finds an active session regardless of guild."""
+        _make_session(db, sid="sess1", guild="111", channel="222")
+        active = db.get_any_active_session()
+        assert active is not None
+        assert active["id"] == "sess1"
+
+    def test_get_any_active_session_none(self, db):
+        """get_any_active_session returns None when no session is active."""
+        active = db.get_any_active_session()
+        assert active is None
+
+    def test_get_any_active_session_blocks_different_guild(self, db):
+        """Regression for Bug #9: an active session in guild A blocks
+        /start in guild B. This bot serves one D&D group, so only one
+        session should run at a time globally.
+        """
+        _make_session(db, sid="sess1", guild="111", channel="222")
+        # A session is active in guild 111 — get_any_active_session must
+        # return it even when queried from the context of guild 222.
+        active = db.get_any_active_session()
+        assert active is not None
+        assert active["discord_guild_id"] == "111"
+
+    def test_get_any_active_session_excludes_ended(self, db):
+        """Ended sessions are not returned by get_any_active_session."""
+        _make_session(db, sid="sess1", guild="111", channel="222")
+        db.end_session("sess1")
+        assert db.get_any_active_session() is None
+
+    def test_get_any_active_session_excludes_failed(self, db):
+        """Failed sessions are not returned by get_any_active_session."""
+        _make_session(db, sid="sess1", guild="111", channel="222")
+        db.fail_session("sess1")
+        assert db.get_any_active_session() is None
+
+    def test_single_session_allows_new_after_previous_ends(self, db):
+        """After a session ends, a new session can be started in any guild."""
+        _make_session(db, sid="sess1", guild="111", channel="222")
+        db.end_session("sess1")
+        assert db.get_any_active_session() is None
+
+        _make_session(db, sid="sess2", guild="333", channel="444")
+        active = db.get_any_active_session()
+        assert active is not None
+        assert active["id"] == "sess2"
+
     def test_get_queued_sessions(self, db):
         """Queued sessions are returned."""
         _make_session(db, sid="s1", guild="111", channel="222")

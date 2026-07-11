@@ -405,3 +405,29 @@ One-line code change in `bot/commands.py`:
 - `test_failed_voice_join_allows_new_session`: End-to-end regression — after a failed session (via `fail_session`), a new session in the same guild can be created and is returned by `get_active_session()`.
 
 **Impact:** Failed voice joins no longer block future recordings. 180/180 tests pass.
+
+---
+
+## Bug #9 — Single-Session Enforcement (Session ID Collision)
+
+**Date:** 2026-07-11
+
+**Root cause:** `start_command` only checked for active sessions within the same guild (`get_active_session(guild_id)`). Two sessions started in the same UTC second (even in different guilds) would generate the same session ID (`YYYY-MM-DD_HH-MM-SS`), causing a PRIMARY KEY collision. More fundamentally, this bot is designed for a single D&D group — only one session should run at a time, period.
+
+**Fix:** Added `get_any_active_session()` to `shared/database.py` — queries for any non-ended session across ALL guilds (no guild_id filter). `start_command` now calls this instead of the per-guild `get_active_session()` before creating a new session. If any session is active anywhere, `/start` returns an ephemeral error and does not create a new session record. This eliminates the collision risk entirely: two sessions can never be created in the same UTC second because the second `/start` is rejected before it reaches `create_session()`.
+
+**Files changed:**
+- `shared/database.py`: Added `get_any_active_session()` method
+- `bot/commands.py`: `start_command` now calls `get_any_active_session()` instead of `get_active_session(guild_id)`
+- `docs/ARCHITECTURE.md`: Updated recording flow steps 1-2 to document the global active-session check
+- `docs/IMPLEMENTATION_NOTES.md`: Added "Single-Session Enforcement" section
+
+**Tests (tests/test_database.py):**
+- `test_get_any_active_session_finds_across_guilds`: Finds an active session regardless of guild
+- `test_get_any_active_session_none`: Returns None when no session is active
+- `test_get_any_active_session_blocks_different_guild`: Regression — active session in guild A is visible globally, blocks guild B
+- `test_get_any_active_session_excludes_ended`: Ended sessions are not returned
+- `test_get_any_active_session_excludes_failed`: Failed sessions are not returned
+- `test_single_session_allows_new_after_previous_ends`: After ending, a new session in a different guild can be started
+
+**Impact:** Only one recording session can be active at a time. Session ID collisions are impossible. 186/186 tests pass.

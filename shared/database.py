@@ -114,6 +114,25 @@ class Database:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def get_any_active_session(self) -> dict | None:
+        """Return the most recent non-ended session across ALL guilds.
+
+        This bot is designed for a single D&D group, so only one session
+        should be active at any time — regardless of which guild it was
+        started in. start_command calls this before creating a new session
+        to enforce single-session-only operation. This also eliminates the
+        original Bug #9 (session ID collision from two starts in the same
+        UTC second): if a session is already active, no new one is created.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT * FROM sessions
+                   WHERE ended_at IS NULL
+                   ORDER BY started_at DESC LIMIT 1""",
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     def get_queued_sessions(self) -> list[dict]:
         """Return all sessions with status 'queued'."""
         with self._cursor() as cur:

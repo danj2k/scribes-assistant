@@ -60,8 +60,11 @@ def setup_commands(bot: commands.Bot):
         db = bot.db
         guild_id = str(interaction.guild_id)
 
-        # Check for existing active session
-        active = db.get_active_session(guild_id)
+        # Enforce single-session-only: this bot serves one D&D group, so
+        # only one recording session should be active at any time — across
+        # all guilds. This also eliminates the session ID collision risk
+        # (two starts in the same UTC second would produce the same ID).
+        active = db.get_any_active_session()
         if active:
             await interaction.response.send_message(
                 "A recording session is already in progress. Use `/stop` to end it first.",

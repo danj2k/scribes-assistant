@@ -106,15 +106,16 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 
 ### Recording (bot-driven)
 
-1. User issues /start → bot joins voice channel, creates session with status RECORDING
-2. If the voice channel join fails, the bot calls fail_session() (sets status=FAILED and ended_at), sends an error message, and returns — the session does not block future /start commands because get_active_session() filters on ended_at IS NULL
-3. Bot creates a sync after-callback (via make_recording_after_callback) that captures the sink and schedules async audio processing on the event loop, returning a future
-4. Bot starts recording with the sink and callback
-5. User issues /stop → bot calls stop_recording(), which synchronously invokes the after-callback
-6. The after-callback schedules audio processing (writing WAV files, resolving speaker names from the guild member cache, registering files in audio_files with discord_user_id + speaker_name) via run_coroutine_threadsafe
-7. /stop awaits the future with a 30-second timeout, ensuring all audio files are written and registered before proceeding
-8. If the future resolves with 0 audio files (nobody spoke), the callback has already called fail_session() — /stop informs the user and returns without queuing for transcription
-9. Otherwise, /stop calls end_session() which sets status to QUEUED — the transcriber is guaranteed to find all audio files already registered
+1. User issues /start → bot checks get_any_active_session() across ALL guilds; if a session is already active anywhere, returns an ephemeral error ("A recording session is already in progress") and does not create a new session
+2. If no active session exists, bot joins voice channel and creates session with status RECORDING
+3. If the voice channel join fails, the bot calls fail_session() (sets status=FAILED and ended_at), sends an error message, and returns — the session does not block future /start commands because get_active_session() filters on ended_at IS NULL
+4. Bot creates a sync after-callback (via make_recording_after_callback) that captures the sink and schedules async audio processing on the event loop, returning a future
+5. Bot starts recording with the sink and callback
+6. User issues /stop → bot calls stop_recording(), which synchronously invokes the after-callback
+7. The after-callback schedules audio processing (writing WAV files, resolving speaker names from the guild member cache, registering files in audio_files with discord_user_id + speaker_name) via run_coroutine_threadsafe
+8. /stop awaits the future with a 30-second timeout, ensuring all audio files are written and registered before proceeding
+9. If the future resolves with 0 audio files (nobody spoke), the callback has already called fail_session() — /stop informs the user and returns without queuing for transcription
+10. Otherwise, /stop calls end_session() which sets status to QUEUED — the transcriber is guaranteed to find all audio files already registered
 
 ### Transcription (transcriber-driven)
 
