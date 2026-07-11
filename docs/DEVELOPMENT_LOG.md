@@ -664,3 +664,21 @@ The `_match_case()` call is applied at both correction stages (exact match and f
 - `docs/IMPLEMENTATION_NOTES.md` — added "Non-blocking file writes" subsection
 
 **Impact:** 253/253 tests pass (5 new). The event loop is no longer blocked during WAV file writes — Discord gateway events are handled promptly even during the recording-stop processing window.
+
+---
+
+## Bug #19: Numpy array converted to Python list before passing to sherpa-onnx
+
+**Date:** 2026-07-11
+
+**Problem:** `TranscriptionWorker.transcribe()` called `audio.tolist()` on the numpy array returned by `soundfile.read()` before passing it to `stream.accept_waveform()`. For a 30-minute D&D session at 16 kHz, this created ~28.8 million Python float objects (~690 MB of object overhead), wasting both memory and CPU on a conversion that sherpa-onnx doesn't need — its pybind11 bindings accept numpy arrays natively via the buffer protocol.
+
+**Fix:** Removed the `.tolist()` call. The numpy array is now passed directly to `stream.accept_waveform(sample_rate, audio)`. The official sherpa-onnx Python examples use the same pattern (see `python-api-examples/offline-decode-files.py` in the k2-fsa/sherpa-onnx repo). After stereo-to-mono downmix via `audio.mean(axis=1)`, the result remains a numpy array and is passed through unchanged.
+
+**Files changed:**
+- `transcriber/worker.py` — removed `.tolist()` call, added explanatory comment
+- `tests/test_transcriber_worker.py` — 3 new tests in `TestTranscribeNoNumpyToList`: verifies accept_waveform receives the exact numpy array object (not a list), verifies .tolist() was not called (result is not a Python list), verifies stereo downmix still produces a numpy array
+- `docs/ARCHITECTURE.md` — updated transcription flow step 6 to note numpy array passthrough
+- `docs/IMPLEMENTATION_NOTES.md` — added "Numpy Array Passthrough to sherpa-onnx" section
+
+**Impact:** 256/256 tests pass (3 new). Eliminates ~690 MB of unnecessary memory allocation and seconds of CPU-bound list conversion for a typical 30-minute session.

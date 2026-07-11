@@ -118,6 +118,114 @@ class TestWorkerTranscribe:
         assert result.text == ""
 
 
+class TestTranscribeNoNumpyToList:
+    """Tests that transcribe passes the numpy array directly to accept_waveform.
+
+    Bug #19: calling .tolist() on a large numpy array creates millions of
+    Python float objects, wasting memory and CPU.  sherpa-onnx's pybind11
+    bindings accept numpy arrays via the buffer protocol natively.
+    """
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_accept_waveform_receives_array_not_list(self, mock_sf, mock_sherpa):
+        """accept_waveform must receive the audio object directly, not audio.tolist()."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        audio = np.array([0.0, 0.1, 0.2, 0.3], dtype="float32")
+        mock_sf.read.return_value = (audio, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        mock_stream = MagicMock()
+        mock_recognizer.create_stream.return_value = mock_stream
+        mock_stream.result.text = "test"
+        mock_stream.result.tokens = None
+        mock_stream.result.timestamps = None
+
+        worker.transcribe("/tmp/audio.wav")
+
+        # accept_waveform should receive the numpy array itself
+        call_args = mock_stream.accept_waveform.call_args
+        assert call_args is not None
+        passed_audio = call_args[0][1]  # second positional arg
+        assert passed_audio is audio, (
+            "accept_waveform should receive the numpy array directly, "
+            "not a converted copy"
+        )
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_tolist_not_called(self, mock_sf, mock_sherpa):
+        """The audio array's .tolist() method must never be called."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        audio = np.array([0.0, 0.1, 0.2, 0.3], dtype="float32")
+        mock_sf.read.return_value = (audio, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        mock_stream = MagicMock()
+        mock_recognizer.create_stream.return_value = mock_stream
+        mock_stream.result.text = "test"
+        mock_stream.result.tokens = None
+        mock_stream.result.timestamps = None
+
+        worker.transcribe("/tmp/audio.wav")
+
+        # The mock_stream is a MagicMock, so we can't check audio.tolist
+        # directly on it.  Instead verify the audio array was not converted
+        # by checking that accept_waveform got the exact same object.
+        call_args = mock_stream.accept_waveform.call_args
+        passed_audio = call_args[0][1]
+        assert not isinstance(passed_audio, list), (
+            "accept_waveform received a Python list — .tolist() was called"
+        )
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_stereo_audio_passed_as_mono_array(self, mock_sf, mock_sherpa):
+        """After stereo→mono downmix, the result should still be a numpy array."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        # Stereo audio: 4 samples, 2 channels
+        stereo = np.array(
+            [[0.0, 0.1], [0.2, 0.3], [0.4, 0.5], [0.6, 0.7]],
+            dtype="float32",
+        )
+        mock_sf.read.return_value = (stereo, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        mock_stream = MagicMock()
+        mock_recognizer.create_stream.return_value = mock_stream
+        mock_stream.result.text = "test"
+        mock_stream.result.tokens = None
+        mock_stream.result.timestamps = None
+
+        worker.transcribe("/tmp/stereo.wav")
+
+        call_args = mock_stream.accept_waveform.call_args
+        passed_audio = call_args[0][1]
+        # After mean(axis=1), result should be a 1-D numpy array, not a list
+        assert isinstance(passed_audio, np.ndarray), (
+            "Downmixed audio should remain a numpy array"
+        )
+        assert passed_audio.ndim == 1
+
+
 class TestDownloadModel:
     """Tests for the download_model helper."""
 

@@ -116,7 +116,11 @@ class TranscriptionWorker:
                 audio = audio.mean(axis=1)
 
             stream = self.recognizer.create_stream(hotwords=hotwords)
-            stream.accept_waveform(sample_rate, audio.tolist())
+            # Pass the numpy array directly — sherpa-onnx's pybind11 bindings
+            # accept it via the buffer protocol without conversion.  Calling
+            # .tolist() would create ~28 million Python float objects for a
+            # 30-minute session (16 kHz × 1800 s), wasting both memory and CPU.
+            stream.accept_waveform(sample_rate, audio)
             self.recognizer.decode_stream(stream)
 
             result = stream.result

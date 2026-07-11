@@ -130,7 +130,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 3. Updates the audio file status to TRANSCRIBING
 4. Loads lexicon from YAML file, builds hotwords string for the recogniser and keeps the Lexicon instance for post-transcription correction
 5. Converts WAV files to 16kHz mono via ffmpeg
-6. Runs sherpa-onnx Whisper model (size from config, default "small") with hotwords bias
+6. Runs sherpa-onnx Whisper model (size from config, default "small") with hotwords bias. Audio samples are passed as numpy arrays directly to `accept_waveform()` — no Python list conversion, which avoids creating millions of float objects for long recordings
 7. Captures token-level timestamps from the recogniser result
 8. Groups tokens into segments, applies lexicon correction via a three-stage pipeline (exact lexicon match → English dictionary gate → Levenshtein fuzzy match) to each segment's text, and stores corrected segments in the transcript_segments table with the speaker's name
 9. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue

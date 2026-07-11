@@ -114,6 +114,14 @@ The `strip_components=1` parameter strips the top-level archive directory (e.g. 
 
 Extraction is fail-closed: if any member has an unsafe path, a `ValueError` is raised and extraction halts. A partial extraction is preferable to silently writing outside the target directory.
 
+### Numpy Array Passthrough to sherpa-onnx (Bug #19)
+
+`soundfile.read()` returns audio samples as a numpy `float32` array. The transcriber passes this array directly to `stream.accept_waveform(sample_rate, audio)` without calling `.tolist()`. sherpa-onnx's pybind11 bindings accept numpy arrays natively via the buffer protocol — no Python-level conversion is needed.
+
+Calling `.tolist()` would convert the compact C-backed array into a list of individual Python float objects. For a 30-minute D&D session recorded at 16 kHz, that's ~28.8 million float objects (16,000 samples/second × 1,800 seconds), each consuming ~24 bytes of Python object overhead — roughly 690 MB of wasted memory on top of the ~115 MB the numpy array itself uses. The conversion is also CPU-bound, adding seconds of latency before transcription can begin.
+
+After stereo-to-mono downmix (`audio.mean(axis=1)`), the result is still a numpy array and is passed through unchanged.
+
 
 ### Transcript Delivery
 
