@@ -39,7 +39,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Poll the SQLite queue for sessions with status QUEUED
 - Load the lexicon for hotwords bias and post-transcription fuzzy correction
 - Run sherpa-onnx Whisper transcription with initial prompt injection
-- Apply lexicon fuzzy correction via a three-stage pipeline: (1) exact case-insensitive lexicon match → canonicalise, (2) English dictionary gate via pyspellchecker → skip if recognised English word, (3) Levenshtein fuzzy match against the D&D lexicon → replace if within threshold. This prevents false positives like "ore" → "Orc" while still correcting misrecognised D&D terms like "theran" → "Theron".
+- Apply lexicon fuzzy correction via a three-stage pipeline: (1) exact case-insensitive lexicon match → canonicalise, (2) English dictionary gate via pyspellchecker → skip if recognised English word, (3) Levenshtein fuzzy match against the D&D lexicon → replace if within threshold. This prevents false positives like "ore" → "Orc" while still correcting misrecognised D&D terms like "theran" → "Theron". Tokenisation treats apostrophes and hyphens as intra-word characters so D&D names like "Grim-jaw" or "Smith'var" are matched as single tokens. Original word casing is preserved: all-caps stays all-caps ("THERAN" → "THERON"), title case stays title case ("Theran" → "Theron").
 - Capture token-level timestamps for interleaved transcript merging
 - Store corrected per-file transcript segments in the database
 - Merge all speakers' segments chronologically after ALL files are transcribed

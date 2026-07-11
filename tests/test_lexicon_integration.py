@@ -191,6 +191,122 @@ class TestCorrectTextDictionaryGate:
         assert result == "I may go to the tavern", f"Got: {result!r}"
 
 
+class TestCorrectTextTokenisation:
+    """Tests for _correct_text tokenisation — Bug #14.
+
+    D&D names often contain hyphens (e.g. "Grim-jaw") or apostrophes
+    (e.g. "Smith'var"). The old regex \\b\\w+\\b split these into
+    fragments that would never match lexicon terms. The new regex
+    \\w+(?:['-]\\w+)* treats apostrophes and hyphens as intra-word
+    characters so the full name is matched as a single token.
+    """
+
+    def _make_lexicon(self, terms_dict):
+        """Create a Lexicon instance without loading from file."""
+        lex = Lexicon.__new__(Lexicon)
+        lex._fuzzy_threshold = 0.5
+        lex.terms = terms_dict
+        return lex
+
+    def test_hyphenated_name_corrected(self):
+        """Hyphenated D&D name is corrected as a single token."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "grim-jaw": {"term": "Grim-jaw", "description": "Dwarf fighter"},
+        })
+        # Exact match — should be canonicalised as a whole
+        result = _correct_text("grim-jaw attacked the goblin", lex)
+        assert result == "Grim-jaw attacked the goblin", f"Got: {result!r}"
+
+    def test_apostrophe_name_corrected(self):
+        """D&D name with apostrophe is corrected as a single token."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "smith'var": {"term": "Smith'var", "description": "Rogue"},
+        })
+        result = _correct_text("smith'var picked the lock", lex)
+        assert result == "Smith'var picked the lock", f"Got: {result!r}"
+
+    def test_o_brien_style_name(self):
+        """O'Brien style name with apostrophe is tokenised correctly."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "o'brien": {"term": "O'Brien", "description": "NPC"},
+        })
+        result = _correct_text("o'brien said hello", lex)
+        assert result == "O'Brien said hello", f"Got: {result!r}"
+
+    def test_fuzzy_match_on_hyphenated_name(self):
+        """Fuzzy match works on hyphenated names (not just exact)."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "grim-jaw": {"term": "Grim-jaw", "description": "Dwarf fighter"},
+        })
+        # "grimjaw" (no hyphen) is distance 1 from "grim-jaw" — should match
+        # Note: Levenshtein counts the hyphen, so distance is 1 (insert hyphen)
+        result = _correct_text("grimjaw attacked", lex)
+        assert result == "Grim-jaw attacked", f"Got: {result!r}"
+
+    def test_multiple_hyphens_in_name(self):
+        """Names with multiple hyphens are handled correctly."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "three-fang-killer": {"term": "Three-Fang-Killer", "description": "Boss monster"},
+        })
+        result = _correct_text("three-fang-killer appeared", lex)
+        assert result == "Three-Fang-Killer appeared", f"Got: {result!r}"
+
+    def test_hyphenated_name_not_split_by_old_regex(self):
+        """Regression test: the old \\b\\w+\\b would split 'grim-jaw' into
+        'grim' and 'jaw' — neither matches 'grim-jaw' so no correction.
+        The new regex matches the full token.
+        """
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "grim-jaw": {"term": "Grim-jaw", "description": "Dwarf fighter"},
+        })
+        # With the old regex, "grim-jaw" → "grim" + "-" + "jaw"
+        # Neither "grim" nor "jaw" matches "grim-jaw" → no correction
+        # With the new regex, "grim-jaw" is one token → exact match → corrected
+        result = _correct_text("The grim-jaw fought", lex)
+        assert result == "The Grim-jaw fought", f"Got: {result!r}"
+
+    def test_leading_trailing_apostrophe_not_matched(self):
+        r"""Leading/trailing apostrophes are punctuation, not intra-word.
+
+        "'tis" should tokenise as "'tis" → the "'tis" token is "'tis"
+        which starts with an apostrophe. Our regex \w+(?:['-]\w+)* starts
+        with \w, so "'tis" matches just "tis" (the leading ' is skipped).
+        This is correct behaviour — leading apostrophes are punctuation.
+        """
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "tis": {"term": "Tis", "description": "A test term"},
+        })
+        # "'tis" → regex matches "tis" (skips leading apostrophe)
+        # "tis" is an exact lexicon match → corrected to "Tis"
+        result = _correct_text("'tis a shame", lex)
+        # The apostrophe stays as punctuation, "tis" → "Tis"
+        assert result == "'Tis a shame", f"Got: {result!r}"
+
+    def test_normal_words_unchanged_by_new_regex(self):
+        """Normal words without hyphens or apostrophes still work correctly."""
+        from transcriber.main import _correct_text
+
+        lex = self._make_lexicon({
+            "theron": {"term": "Theron", "description": "Elf name"},
+        })
+        result = _correct_text("theron said hello to the dragon", lex)
+        assert result == "Theron said hello to the dragon", f"Got: {result!r}"
+
+
 class TestDeliveryLoopNoLexicon:
     """Verify DeliveryLoop no longer imports or uses Lexicon for correction.
 

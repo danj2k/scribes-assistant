@@ -575,3 +575,40 @@ Existing `fake_extract` test mocks in `test_transcriber_worker.py` and `test_dow
 - `TestCorrectTextDictionaryGate` (4 tests in `test_lexicon_integration.py`) — tests the gate through the full `_correct_text()` pipeline: English words not corrected in context, non-English words still corrected, mixed English and lexicon words in one sentence, regression test for "may" → "Mae"
 
 **Impact:** The false-positive problem is solved. Common English words like "ore", "may", "elf" are no longer corrected to D&D terms. Misrecognised D&D terms like "theran" → "Theron" are still corrected. Correctly-transcribed lexicon terms are still canonicalised. 227/227 tests pass (13 new).
+
+## Bug #14 — _correct_text regex doesn't handle apostrophes/hyphens in D&D names
+
+**Date:** 2026-07-11
+
+**Problem:** `_correct_text()` in `transcriber/main.py` used `re.sub(r"\b\w+\b", ...)` to tokenise words for correction. The `\w+` pattern only matches `[a-zA-Z0-9_]`, so D&D names containing apostrophes (e.g. "Smith'var") or hyphens (e.g. "Grim-jaw") were split into fragments — "Grim-jaw" became "grim" and "jaw", neither of which matches the lexicon term "Grim-jaw". This meant hyphenated and apostrophe-containing names could never be corrected.
+
+**Fix:** Changed the tokenisation regex from `r"\b\w+\b"` to `r"\w+(?:['-]\w+)*"`. The new pattern matches word characters followed by zero or more (apostrophe-or-hyphen + word characters) groups, so "Grim-jaw", "Smith'var", "O'Brien", and "Three-Fang-Killer" are all matched as single tokens. Leading/trailing apostrophes and hyphens are not captured (they start/end with `\w`, not `['-]`), so punctuation like "'tis" or "well—" is handled correctly.
+
+**Files changed:**
+- `transcriber/main.py` — regex updated, docstring expanded with tokenisation explanation
+
+**Tests:**
+- `TestCorrectTextTokenisation` (8 tests in `test_lexicon_integration.py`) — hyphenated name corrected, apostrophe name corrected, O'Brien style, fuzzy match on hyphenated name, multiple hyphens, regression test (old regex would have failed), leading apostrophe handling, normal words still work
+
+**Impact:** D&D names with apostrophes and hyphens are now correctly tokenised and can be matched by both exact and fuzzy correction. 243/243 tests pass (16 new).
+
+## Bug #15 — _correct_text doesn't preserve original word case
+
+**Date:** 2026-07-11
+
+**Problem:** `Lexicon.correct()` returned the lexicon's canonical form regardless of the original word's casing. If the transcript had "THERAN" (all caps, e.g. shouting), the correction returned "Theron" (the canonical form) — losing the all-caps casing that may be intentional. Similarly, title-case words like "Theran" would get the canonical form "Theron" (correct by coincidence, but not by design).
+
+**Fix:** Added `_match_case(original, replacement)` helper in `shared/lexicon.py` that applies the original word's casing pattern to the corrected term:
+- All uppercase (len > 1) → `replacement.upper()` (e.g. "THERAN" → "THERON")
+- Title case (first upper, rest lower) → `replacement[0].upper() + replacement[1:].lower()` (e.g. "Theran" → "Theron")
+- All lowercase or mixed casing → canonical form as-is (e.g. "theron" → "Theron")
+
+The `_match_case()` call is applied at both correction stages (exact match and fuzzy match) in `Lexicon.correct()`. Single-character uppercase words are treated as title case, not all-caps (since a single letter can't distinguish "shouting" from "capitalised").
+
+**Files changed:**
+- `shared/lexicon.py` — added `_match_case()` helper, updated both `correct()` return paths to use it
+
+**Tests:**
+- `TestMatchCase` (8 tests in `test_lexicon.py`) — all-caps on exact match, title case on exact match, lowercase returns canonical on exact match, all-caps on fuzzy match, title case on fuzzy match, mixed casing returns canonical, single-char uppercase, case preservation with hyphenated term via `_correct_text`
+
+**Impact:** Shouting ("THERAN") is now preserved as "THERON" after correction, and title-case words ("Theran") get proper title-case corrections ("Theron"). All-lowercase words still get the canonical form. 243/243 tests pass (8 new).

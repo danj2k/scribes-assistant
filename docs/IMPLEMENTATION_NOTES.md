@@ -34,6 +34,15 @@ This runs in the transcriber, not the bot's delivery loop, so the corrected text
 
 Both stages use the same YAML lexicon file (`/data/lexicon.yaml`). Terms added via `/lexicon add` are immediately available for both stages in future sessions.
 
+**Tokenisation (Bug #14):** The regex `\w+(?:['-]\w+)*` treats apostrophes and hyphens as intra-word characters so that D&D names like "Grim-jaw", "Smith'var", or "O'Brien" are matched as single tokens. The old regex `\b\w+\b` split these into fragments ("grim" + "jaw") that would never match lexicon terms. Leading/trailing apostrophes and hyphens are not captured — those are punctuation, not part of a name (e.g. "'tis" tokenises as "tis").
+
+**Case preservation (Bug #15):** When a correction is applied, the original word's casing pattern is preserved via `_match_case()`:
+- All uppercase (len > 1) → correction is uppercased (e.g. "THERAN" → "THERON" — shouting preserved)
+- Title case (first upper, rest lower) → correction is title-cased (e.g. "Theran" → "Theron")
+- All lowercase or mixed casing → canonical form from lexicon is used as-is (e.g. "theron" → "Theron")
+
+This means a word spoken in shouting ("GRIM-JAW attacked") keeps its all-caps form after correction ("GRIM-JAW attacked"), and title-case names ("Grim-jaw attacked") stay title-case.
+
 ### SQLite Concurrency
 
 SQLite supports WAL mode for concurrent reads. Both the bot and transcriber access the same database file. Enable WAL mode to allow the transcriber to read while the bot writes. Locking is handled at the application level (status field transitions).

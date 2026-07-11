@@ -96,6 +96,11 @@ def _correct_text(text: str, lexicon: Lexicon | None) -> str:
     reassembles with original whitespace/punctuation preserved. Words
     not in the lexicon pass through unchanged.
 
+    Tokenisation uses a pattern that treats apostrophes and hyphens as
+    intra-word characters so that D&D names like "Grim-jaw" or
+    "Smith'var" are matched as single tokens rather than being split
+    into fragments that would never match lexicon terms.
+
     This runs in the transcriber, not the bot's delivery loop, so the
     corrected text is what gets stored in the database and written to
     the transcript file. The bot's delivery loop simply reads and
@@ -109,7 +114,12 @@ def _correct_text(text: str, lexicon: Lexicon | None) -> str:
         corrected = lexicon.correct(word)
         return corrected if corrected else word
 
-    return re.sub(r"\b\w+\b", _replace_word, text)
+    # Match word characters plus intra-word apostrophes and hyphens.
+    # \w+(?:['-]\w+)* matches "Grim-jaw", "Smith'var", "O'Brien",
+    # and ordinary words like "hello".  Leading/trailing apostrophes
+    # and hyphens (e.g. "'tis" or "well-") are not captured — those
+    # are punctuation, not part of a name.
+    return re.sub(r"\w+(?:['-]\w+)*", _replace_word, text)
 
 
 def setup_logging(config: Config):
