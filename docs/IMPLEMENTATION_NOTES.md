@@ -49,7 +49,7 @@ Bot tokens and other secrets are provided via Docker secrets, which mount as fil
 
 ### Model Weight Persistence
 
-sherpa-onnx model weights (~609MB for whisper-small) are stored in a Docker volume mounted at `/data/models/`. This volume persists across container rebuilds — only downloaded once on first run.
+sherpa-onnx model weights (~609MB for whisper-small; varies by model size) are stored in a Docker volume mounted at `/data/models/whisper-{model_size}/`. The model size is set via the `transcriber.model` config key (default: `small`). This volume persists across container rebuilds — only downloaded once on first run.
 
 A standalone download script (`scripts/download_model.py`) handles the download with progress reporting. It can be run via `docker compose exec transcriber python scripts/download_model.py`. The script is idempotent — skips download if all required files already exist. The transcriber's main loop also calls `download_model()` as a fallback on startup.
 
@@ -98,7 +98,7 @@ Errors that cannot be reported to Discord (connection loss, crashes, model failu
 - **Discord connection lost** — py-cord handles reconnection automatically with exponential backoff. Log a WARNING on each attempt, INFO when reconnected.
 - **Transcriber fails mid-job** — update session status to FAILED in SQLite. The bot can check for failed sessions and optionally notify the user. Log the full error traceback.
 - **SQLite lock contention** — WAL mode allows concurrent reads. If a write fails due to a lock, retry with a short backoff (100ms, 3 attempts).
-- **Model not found** — if `/data/models/whisper-small/` is missing or corrupt, the transcriber logs an ERROR and exits. The bot remains functional but transcription will not proceed until the model is restored.
+- **Model not found** — if `/data/models/whisper-{model_size}/` is missing or corrupt, the transcriber logs an ERROR and exits. The bot remains functional but transcription will not proceed until the model is restored. Run `docker compose exec transcriber python scripts/download_model.py --model {model_size}` to re-download.
 - **Container crash** — Docker restarts the container automatically (`restart: unless-stopped`). The bot reconnects to Discord; the transcriber resumes polling.
 
 ### py-cord Slash Command API (discord.commands vs discord.app_commands)

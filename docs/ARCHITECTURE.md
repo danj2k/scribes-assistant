@@ -43,7 +43,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Update session status to COMPLETE in the SQLite queue via set_transcript_path()
 
 **Key dependencies:**
-- sherpa-onnx (speech-to-text, Whisper small model)
+- sherpa-onnx (speech-to-text, Whisper — model size configurable, default "small")
 - ffmpeg (audio conversion to 16kHz mono WAV)
 - SQLite3 (queue and lexicon access)
 
@@ -67,7 +67,7 @@ A Docker volume mounted at `/data` in both containers provides the filesystem in
 │   ├── bot.log
 │   └── transcriber.log
 └── models/              # sherpa-onnx model weights
-    └── whisper-small/
+    └── whisper-{model_size}/  (default: whisper-small)
 ```
 
 ### SQLite Queue
@@ -116,7 +116,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 2. Updates the audio file status to TRANSCRIBING
 3. Loads lexicon from SQLite, builds initial prompt string
 4. Converts WAV files to 16kHz mono via ffmpeg
-5. Runs sherpa-onnx Whisper small model with initial prompt
+5. Runs sherpa-onnx Whisper model (size from config, default "small") with initial prompt
 6. Captures token-level timestamps from the recogniser result
 7. Groups tokens into segments and stores them in the transcript_segments table with the speaker's name
 8. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue

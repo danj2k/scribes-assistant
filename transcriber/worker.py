@@ -61,21 +61,27 @@ class TranscriptionWorker:
         model_path: Path to the sherpa-onnx model directory.
         num_threads: CPU threads for sherpa-onnx.
         device: Compute device (only "cpu" supported for Whisper).
+        model_size: Whisper model size (tiny, base, small, medium, large-v3).
+            Used to derive the correct filenames when loading or downloading
+            the model.
     """
 
-    def __init__(self, model_path: str, num_threads: int = 0, device: str = "cpu"):
+    def __init__(self, model_path: str, num_threads: int = 0, device: str = "cpu",
+                 model_size: str = "small"):
         self.model_path = model_path
         self.num_threads = num_threads
         self.device = device
+        self.model_size = model_size
         self.recognizer = None
 
     def load_model(self):
         """Load the sherpa-onnx Whisper model. Call once at startup."""
+        size = self.model_size
         try:
             self.recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
-                encoder=os.path.join(self.model_path, "small-encoder.onnx"),
-                decoder=os.path.join(self.model_path, "small-decoder.onnx"),
-                tokens=os.path.join(self.model_path, "small-tokens.txt"),
+                encoder=os.path.join(self.model_path, f"{size}-encoder.onnx"),
+                decoder=os.path.join(self.model_path, f"{size}-decoder.onnx"),
+                tokens=os.path.join(self.model_path, f"{size}-tokens.txt"),
                 num_threads=self.num_threads,
                 decoding_method="greedy_search",
             )
@@ -184,8 +190,12 @@ class TranscriptionWorker:
         return segments
 
 
-# Expected SHA-256 hash for the model archive
-EXPECTED_SHA256 = "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6"
+# Expected SHA-256 hashes for each model archive.  Only populate entries
+# whose hash has been verified against the real download — unlisted sizes
+# will still download but a WARNING is logged instead of failing.
+EXPECTED_SHA256: dict[str, str] = {
+    "small": "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6",
+}
 
 # Module-level state for progress deduplication -- only log when something changes
 _last_log_pct: int = -1
@@ -233,12 +243,16 @@ def _progress_hook(block_num: int, block_size: int, total_size: int) -> None:
             logger.info("Downloading model: %d MB", mb_downloaded)
 
 
-def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
+def download_model(model_dir: str, model_url: Optional[str] = None,
+                   model_size: str = "small") -> str:
     """Download or verify the whisper model exists.
 
     Args:
         model_dir: Directory to store the model
         model_url: Optional override URL for model download
+        model_size: Whisper model size (tiny, base, small, medium, large-v3).
+            Determines the expected filenames inside the archive and the
+            default download URL.
 
     Returns:
         Path to the model directory
@@ -248,9 +262,9 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
 
     # Check if model already exists
     required_files = [
-        "small-encoder.onnx",
-        "small-decoder.onnx",
-        "small-tokens.txt",
+        f"{model_size}-encoder.onnx",
+        f"{model_size}-decoder.onnx",
+        f"{model_size}-tokens.txt",
     ]
 
     all_exist = all((model_path / f).exists() for f in required_files)
@@ -258,11 +272,11 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
         logger.info("Model already downloaded at %s", model_path)
         return str(model_path)
 
-    # Default model URL (sherpa-onnx whisper-small)
+    # Default model URL (sherpa-onnx whisper-<size>)
     if not model_url:
         model_url = (
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-            "asr-models/sherpa-onnx-whisper-small.tar.bz2"
+            f"asr-models/sherpa-onnx-whisper-{model_size}.tar.bz2"
         )
 
     _reset_progress_state()
@@ -277,18 +291,26 @@ def download_model(model_dir: str, model_url: Optional[str] = None) -> str:
             tar_path.unlink()
         raise RuntimeError(f"Model download failed: {e}") from e
 
-    # Verify SHA-256 hash
-    logger.info("Verifying SHA-256 hash...")
-    actual_hash = _sha256_file(tar_path)
-    if actual_hash != EXPECTED_SHA256:
-        tar_path.unlink()
-        raise RuntimeError(
-            f"SHA-256 verification failed!"
-            f" Expected: {EXPECTED_SHA256}"
-            f" Got: {actual_hash}"
-            f" The downloaded file may be corrupted or tampered with."
+    # Verify SHA-256 hash (skip with warning if no hash known for this size)
+    expected_hash = EXPECTED_SHA256.get(model_size)
+    if expected_hash is None:
+        logger.warning(
+            "No expected SHA-256 hash for model size '%s' — "
+            "skipping verification. Downloaded archive will be used as-is.",
+            model_size,
         )
-    logger.info("Hash verified: %s...", actual_hash[:16])
+    else:
+        logger.info("Verifying SHA-256 hash...")
+        actual_hash = _sha256_file(tar_path)
+        if actual_hash != expected_hash:
+            tar_path.unlink()
+            raise RuntimeError(
+                f"SHA-256 verification failed!"
+                f" Expected: {expected_hash}"
+                f" Got: {actual_hash}"
+                f" The downloaded file may be corrupted or tampered with."
+            )
+        logger.info("Hash verified: %s...", actual_hash[:16])
 
     # Extract
     try:

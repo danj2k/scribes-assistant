@@ -245,3 +245,41 @@ the model size hardcoded into the directory name. Two independent problems:
   - `test_transcriber_worker.py`: updated to use `TranscriptionResult` return type, added segment grouping tests.
 
 **Impact:** Multi-speaker sessions now produce a single interleaved transcript with all speakers' dialogue in chronological order, each line timestamped and labelled with the speaker's name. The delivery loop only fires once, after the complete transcript is written.
+
+## 2026-07-11 — Bug Fix #4: Model size hardcoded to "small"
+
+### Bug #4: Worker and download script ignore config model_size
+
+**Symptom:** The `transcriber.model` config key (default: `small`) allowed selecting a different Whisper model size (tiny, base, small, medium, large-v3), but the value was never passed to the components that actually load and download the model. Changing it in `config.yaml` had no effect — the worker always loaded `small-encoder.onnx`, `small-decoder.onnx`, `small-tokens.txt`, and the download script always fetched the small model tarball.
+
+**Root cause:** The config infrastructure (`Config.model_size` and `Config.model_path` properties) was already implemented in `shared/config.py`, but three call sites hardcoded "small":
+
+1. `transcriber/worker.py` `load_model()` — filenames constructed with literal "small" prefix.
+2. `transcriber/worker.py` `download_model()` — `REQUIRED_FILES` list and default URL both baked in "small".
+3. `scripts/download_model.py` — `DEFAULT_MODEL_URL`, `REQUIRED_FILES`, and `EXPECTED_SHA256` all hardcoded for the small model only.
+4. `transcriber/main.py` — main loop called `download_model()` and `TranscriptionWorker()` without passing `model_size`.
+
+**Fix — transcriber/worker.py:**
+- Added `model_size: str = "small"` parameter to `TranscriptionWorker.__init__()`, stored as `self.model_size`.
+- `load_model()` now uses `self.model_size` to construct filenames: `{size}-encoder.onnx`, `{size}-decoder.onnx`, `{size}-tokens.txt`.
+- `download_model()` now accepts a `model_size` parameter. `REQUIRED_FILES` is built dynamically via a `_required_files(model_size)` helper. The default URL is built from a template: `sherpa-onnx-whisper-{model_size}.tar.bz2`.
+- `EXPECTED_SHA256` changed from a single string to a dict keyed by model size. Only "small" has a verified hash. Unlisted sizes download successfully but skip SHA-256 verification with a WARNING log.
+
+**Fix — scripts/download_model.py:**
+- Same structural changes as worker.py: `EXPECTED_SHA256` is now a dict, `_required_files()` builds the list dynamically, `DEFAULT_MODEL_URL_TEMPLATE` uses f-string interpolation.
+- `download_model()` accepts `model_size` parameter.
+- Added `--model` / `-m` CLI flag to select model size from the command line.
+- SHA-256 verification skips with a warning for sizes without a known hash.
+
+**Fix — transcriber/main.py:**
+- Main loop now passes `config.model_size` to both `download_model()` and `TranscriptionWorker()`.
+
+**Fix — Documentation:**
+- ARCHITECTURE.md: Updated model description to note configurable size, updated directory tree to show `whisper-{model_size}/`.
+- IMPLEMENTATION_NOTES.md: Updated model weight persistence section and troubleshooting to reflect configurable model size and `--model` CLI flag.
+
+**Tests:** 158/158 passing (10 new tests added):
+- `test_transcriber_worker.py`: `test_load_model_uses_model_size_in_filenames` (base), `test_load_model_default_small_filenames`, `test_download_model_base_size_uses_base_filenames`, `test_download_model_default_url_uses_model_size`, `test_expected_sha256_dict_has_known_hashes`, `test_unknown_model_size_skips_hash_verification`.
+- `test_download_model.py`: `test_expected_sha256_dict_has_known_hashes`, `test_unknown_model_size_skips_hash_verification`, `test_main_model_flag`, `test_main_short_model_flag`.
+
+**Impact:** Users can now select any Whisper model size via `config.yaml` (`transcriber.model: medium`) or the CLI (`python scripts/download_model.py --model medium`). The worker, download script, and transcriber main loop all respect the setting. SHA-256 verification is enforced for known sizes (currently "small" only) and gracefully skipped with a warning for others.

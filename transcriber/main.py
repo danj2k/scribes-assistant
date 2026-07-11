@@ -123,12 +123,13 @@ def run_worker(config_path: str = "/app/config.yaml"):
             logger.warning("Could not load lexicon, hotwords disabled: %s", e)
 
     # Download model if not present
-    download_model(config.model_path)
+    download_model(config.model_path, model_size=config.model_size)
 
     # Create transcription worker and load model
     worker = TranscriptionWorker(
         model_path=config.model_path,
         num_threads=config.num_threads,
+        model_size=config.model_size,
     )
     worker.load_model()
 

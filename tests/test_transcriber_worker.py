@@ -23,6 +23,48 @@ class TestWorkerInit:
         worker = TranscriptionWorker(model_path="/tmp/models", num_threads=4)
         assert worker is not None
 
+    @patch("transcriber.worker.sherpa_onnx")
+    def test_worker_default_model_size(self, mock_sherpa):
+        """Worker defaults to 'small' model size."""
+        from transcriber.worker import TranscriptionWorker
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        assert worker.model_size == "small"
+
+    @patch("transcriber.worker.sherpa_onnx")
+    def test_worker_custom_model_size(self, mock_sherpa):
+        """Worker accepts custom model size."""
+        from transcriber.worker import TranscriptionWorker
+        worker = TranscriptionWorker(model_path="/tmp/models", model_size="base")
+        assert worker.model_size == "base"
+
+
+class TestWorkerLoadModel:
+    """Tests that load_model uses the correct model_size in filenames."""
+
+    @patch("transcriber.worker.sherpa_onnx")
+    def test_load_model_uses_model_size_in_filenames(self, mock_sherpa):
+        """load_model should construct paths using the model_size parameter."""
+        from transcriber.worker import TranscriptionWorker
+        worker = TranscriptionWorker(model_path="/tmp/models", model_size="base")
+        worker.load_model()
+
+        call_kwargs = mock_sherpa.OfflineRecognizer.from_whisper.call_args[1]
+        assert call_kwargs["encoder"].endswith("base-encoder.onnx")
+        assert call_kwargs["decoder"].endswith("base-decoder.onnx")
+        assert call_kwargs["tokens"].endswith("base-tokens.txt")
+
+    @patch("transcriber.worker.sherpa_onnx")
+    def test_load_model_default_small_filenames(self, mock_sherpa):
+        """load_model with default model_size should use 'small' in filenames."""
+        from transcriber.worker import TranscriptionWorker
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        worker.load_model()
+
+        call_kwargs = mock_sherpa.OfflineRecognizer.from_whisper.call_args[1]
+        assert call_kwargs["encoder"].endswith("small-encoder.onnx")
+        assert call_kwargs["decoder"].endswith("small-decoder.onnx")
+        assert call_kwargs["tokens"].endswith("small-tokens.txt")
+
 
 class TestWorkerTranscribe:
     """Tests for the transcribe method."""
@@ -79,7 +121,7 @@ class TestWorkerTranscribe:
 class TestDownloadModel:
     """Tests for the download_model helper."""
 
-    @patch("transcriber.worker._sha256_file", return_value=EXPECTED_SHA256)
+    @patch("transcriber.worker._sha256_file", return_value=EXPECTED_SHA256["small"])
     @patch("transcriber.worker.tarfile")
     @patch("transcriber.worker.urllib")
     def test_download_model_creates_dir(self, mock_urllib, mock_tarfile, mock_sha256, tmp_path):
@@ -103,6 +145,66 @@ class TestDownloadModel:
         result = download_model(model_dir, model_url="http://example.com/model.tar.gz")
 
         assert tmp_path.joinpath("models").is_dir()
+
+    @patch("transcriber.worker._sha256_file")
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    def test_download_model_base_size_uses_base_filenames(self, mock_urllib, mock_tarfile, mock_sha256, tmp_path):
+        """download_model with model_size='base' checks for base-*.onnx files."""
+        from transcriber.worker import download_model
+
+        # No known hash for 'base' — should skip verification with a warning
+        mock_sha256.return_value = "0" * 64
+
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extract(member, path):
+            (Path(path) / member.name).write_bytes(b"fake model data")
+
+        mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_members = [MagicMock() for _ in range(3)]
+        mock_members[0].name = "sherpa-onnx-whisper-base/base-encoder.onnx"
+        mock_members[1].name = "sherpa-onnx-whisper-base/base-decoder.onnx"
+        mock_members[2].name = "sherpa-onnx-whisper-base/base-tokens.txt"
+        mock_tar.getmembers.return_value = mock_members
+        mock_tar.extract.side_effect = fake_extract
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        model_dir = str(tmp_path / "models")
+        result = download_model(model_dir, model_url="http://example.com/model.tar.bz2",
+                                model_size="base")
+        assert result == model_dir
+
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    def test_download_model_default_url_uses_model_size(self, mock_urllib, mock_tarfile, tmp_path):
+        """download_model without model_url should build URL from model_size."""
+        from transcriber.worker import download_model
+
+        captured_url = []
+
+        def fake_urlretrieve(url, path, reporthook=None):
+            captured_url.append(url)
+            Path(path).write_bytes(b"fake tar data")
+
+        mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_tar.getmembers.return_value = []
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        model_dir = str(tmp_path / "models")
+        # Use model_size with no known hash so verification is skipped
+        try:
+            download_model(model_dir, model_size="medium")
+        except FileNotFoundError:
+            pass  # Expected — no files extracted in this mock
+
+        assert len(captured_url) > 0
+        assert "sherpa-onnx-whisper-medium" in captured_url[0]
 
 
 
@@ -166,7 +268,7 @@ class TestSha256Verification:
     def test_hash_match_proceeds_to_extraction(self, mock_sha256, mock_urllib, mock_tarfile, tmp_path):
         """Should proceed to extraction when hash matches."""
         from transcriber.worker import download_model, EXPECTED_SHA256
-        mock_sha256.return_value = EXPECTED_SHA256
+        mock_sha256.return_value = EXPECTED_SHA256["small"]
 
         def fake_urlretrieve(url, path, reporthook=None):
             Path(path).write_bytes(b"fake tar data")
@@ -189,12 +291,46 @@ class TestSha256Verification:
         result = download_model(model_dir, model_url="http://example.com/model.tar.bz2")
         assert result == model_dir
 
-    def test_expected_sha256_is_nonempty_string(self):
-        """EXPECTED_SHA256 should be a 64-character hex string."""
-        assert isinstance(EXPECTED_SHA256, str)
-        assert len(EXPECTED_SHA256) == 64
+    def test_expected_sha256_dict_has_known_hashes(self):
+        """EXPECTED_SHA256 should be a dict with at least 'small' as a 64-char hex string."""
+        assert isinstance(EXPECTED_SHA256, dict)
+        assert "small" in EXPECTED_SHA256
+        small_hash = EXPECTED_SHA256["small"]
+        assert len(small_hash) == 64
         # All characters should be valid hex
-        int(EXPECTED_SHA256, 16)
+        int(small_hash, 16)
+
+    @patch("transcriber.worker.tarfile")
+    @patch("transcriber.worker.urllib")
+    @patch("transcriber.worker._sha256_file")
+    def test_unknown_model_size_skips_hash_verification(self, mock_sha256, mock_urllib, mock_tarfile, tmp_path):
+        """download_model with unknown model_size should skip verification, not raise."""
+        from transcriber.worker import download_model
+
+        # _sha256_file should not be called for unlisted sizes
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extract(member, path):
+            (Path(path) / member.name).write_bytes(b"fake model data")
+
+        mock_urllib.request.urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_members = [MagicMock() for _ in range(3)]
+        mock_members[0].name = "sherpa-onnx-whisper-tiny/tiny-encoder.onnx"
+        mock_members[1].name = "sherpa-onnx-whisper-tiny/tiny-decoder.onnx"
+        mock_members[2].name = "sherpa-onnx-whisper-tiny/tiny-tokens.txt"
+        mock_tar.getmembers.return_value = mock_members
+        mock_tar.extract.side_effect = fake_extract
+        mock_tarfile.open.return_value.__enter__ = lambda s: mock_tar
+        mock_tarfile.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        model_dir = str(tmp_path / "models")
+        result = download_model(model_dir, model_url="http://example.com/model.tar.bz2",
+                                model_size="tiny")
+        assert result == model_dir
+        # _sha256_file should NOT have been called since "tiny" has no known hash
+        mock_sha256.assert_not_called()
 
 class TestProgressHookDedup:
     """Tests for _progress_hook log deduplication."""

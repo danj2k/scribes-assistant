@@ -13,7 +13,14 @@ import pytest
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.download_model import download_model, main, REQUIRED_FILES, _progress_hook, _sha256_file, EXPECTED_SHA256
+from scripts.download_model import (
+    download_model,
+    main,
+    _required_files,
+    _progress_hook,
+    _sha256_file,
+    EXPECTED_SHA256,
+)
 
 
 @pytest.fixture
@@ -29,7 +36,7 @@ class TestDownloadModel:
 
     def test_skip_when_files_exist(self, tmp_model_dir):
         """Should skip download if all required files already exist."""
-        for f in REQUIRED_FILES:
+        for f in _required_files("small"):
             (Path(tmp_model_dir) / f).write_bytes(b"fake model data")
 
         result = download_model(tmp_model_dir)
@@ -37,7 +44,7 @@ class TestDownloadModel:
 
     def test_force_re_download(self, tmp_model_dir):
         """Should re-download when force=True even if files exist."""
-        for f in REQUIRED_FILES:
+        for f in _required_files("small"):
             (Path(tmp_model_dir) / f).write_bytes(b"fake model data")
 
         fake_tar = b"fake tar data"
@@ -47,7 +54,7 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_tar = MagicMock()
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -66,18 +73,18 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_tar = MagicMock()
-                    mock_tar.getmembers.return_value = [MagicMock() for _ in REQUIRED_FILES]
+                    mock_tar.getmembers.return_value = [MagicMock() for _ in _required_files("small")]
                     for i, m in enumerate(mock_tar.getmembers()):
-                        m.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[i]}"
+                        m.name = f'sherpa-onnx-whisper-small/{_required_files("small")[i]}'
                     mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
                     result = download_model(tmp_model_dir)
 
         assert result == tmp_model_dir
-        for f in REQUIRED_FILES:
+        for f in _required_files("small"):
             assert (Path(tmp_model_dir) / f).exists()
 
     def test_download_failure(self, tmp_model_dir):
@@ -96,7 +103,7 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_open.side_effect = Exception("bad archive")
                     with pytest.raises(RuntimeError, match="Extraction failed"):
                         download_model(tmp_model_dir)
@@ -112,11 +119,11 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_tar = MagicMock()
                     # Only return one member — simulates archive with missing files
                     mock_member = MagicMock()
-                    mock_member.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[0]}"
+                    mock_member.name = f'sherpa-onnx-whisper-small/{_required_files("small")[0]}'
                     mock_tar.getmembers.return_value = [mock_member]
                     mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
@@ -128,7 +135,7 @@ class TestDownloadModel:
         """Should create the model directory if it doesn't exist."""
         nested = os.path.join(tmp_model_dir, "nested", "model")
         os.makedirs(nested, exist_ok=True)
-        for f in REQUIRED_FILES:
+        for f in _required_files("small"):
             (Path(nested) / f).write_bytes(b"fake model data")
 
         result = download_model(nested)
@@ -146,11 +153,11 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_tar = MagicMock()
-                    mock_tar.getmembers.return_value = [MagicMock() for _ in REQUIRED_FILES]
+                    mock_tar.getmembers.return_value = [MagicMock() for _ in _required_files("small")]
                     for i, m in enumerate(mock_tar.getmembers()):
-                        m.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[i]}"
+                        m.name = f'sherpa-onnx-whisper-small/{_required_files("small")[i]}'
                     mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -165,7 +172,7 @@ class TestDownloadModel:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_open.side_effect = Exception("bad archive")
                     with pytest.raises(RuntimeError):
                         download_model(tmp_model_dir)
@@ -216,11 +223,11 @@ class TestSha256Verification:
 
         with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
             with patch("scripts.download_model.tarfile.open") as mock_open:
-                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256):
+                with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
                     mock_tar = MagicMock()
-                    mock_tar.getmembers.return_value = [MagicMock() for _ in REQUIRED_FILES]
+                    mock_tar.getmembers.return_value = [MagicMock() for _ in _required_files("small")]
                     for i, m in enumerate(mock_tar.getmembers()):
-                        m.name = f"sherpa-onnx-whisper-small/{REQUIRED_FILES[i]}"
+                        m.name = f'sherpa-onnx-whisper-small/{_required_files("small")[i]}'
                     mock_tar.extract.side_effect = fake_extract
                     mock_open.return_value.__enter__ = lambda s: mock_tar
                     mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -228,11 +235,40 @@ class TestSha256Verification:
 
         assert result == tmp_model_dir
 
-    def test_expected_sha256_is_nonempty_string(self):
-        """EXPECTED_SHA256 should be a 64-character hex string."""
-        assert isinstance(EXPECTED_SHA256, str)
-        assert len(EXPECTED_SHA256) == 64
-        int(EXPECTED_SHA256, 16)
+    def test_expected_sha256_dict_has_known_hashes(self):
+        """EXPECTED_SHA256 should be a dict with at least 'small' as a 64-char hex string."""
+        assert isinstance(EXPECTED_SHA256, dict)
+        assert "small" in EXPECTED_SHA256
+        small_hash = EXPECTED_SHA256["small"]
+        assert len(small_hash) == 64
+        int(small_hash, 16)
+
+    @patch("scripts.download_model.urllib.request.urlretrieve")
+    @patch("scripts.download_model.tarfile.open")
+    @patch("scripts.download_model._sha256_file")
+    def test_unknown_model_size_skips_hash_verification(self, mock_sha256, mock_open, mock_urlretrieve, tmp_model_dir):
+        """download_model with unknown model_size should skip verification, not raise."""
+        def fake_urlretrieve(url, path, reporthook=None):
+            Path(path).write_bytes(b"fake tar data")
+
+        def fake_extract(member, path):
+            (Path(path) / member.name).write_bytes(b"fake model data")
+
+        mock_urlretrieve.side_effect = fake_urlretrieve
+        mock_tar = MagicMock()
+        mock_members = [MagicMock() for _ in range(3)]
+        mock_members[0].name = "sherpa-onnx-whisper-tiny/tiny-encoder.onnx"
+        mock_members[1].name = "sherpa-onnx-whisper-tiny/tiny-decoder.onnx"
+        mock_members[2].name = "sherpa-onnx-whisper-tiny/tiny-tokens.txt"
+        mock_tar.getmembers.return_value = mock_members
+        mock_tar.extract.side_effect = fake_extract
+        mock_open.return_value.__enter__ = lambda s: mock_tar
+        mock_open.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = download_model(tmp_model_dir, model_size="tiny")
+        assert result == tmp_model_dir
+        # _sha256_file should NOT have been called since "tiny" has no known hash
+        mock_sha256.assert_not_called()
 
 class TestProgressHook:
     """Tests for _progress_hook()."""
@@ -254,13 +290,13 @@ class TestMain:
     """Tests for main() CLI entry point."""
 
     def test_main_default_args(self):
-        """Should call download_model with default directory."""
+        """Should call download_model with default directory and model_size."""
         with patch("scripts.download_model.download_model") as mock_dl:
             mock_dl.return_value = "data/models/whisper-small"
             sys.argv = ["download_model.py"]
             main()
             mock_dl.assert_called_once_with(
-                "data/models/whisper-small", force=False
+                "data/models/whisper-small", force=False, model_size="small"
             )
 
     def test_main_custom_dir(self):
@@ -269,7 +305,7 @@ class TestMain:
             mock_dl.return_value = "/tmp/model"
             sys.argv = ["download_model.py", "/tmp/model"]
             main()
-            mock_dl.assert_called_once_with("/tmp/model", force=False)
+            mock_dl.assert_called_once_with("/tmp/model", force=False, model_size="small")
 
     def test_main_force_flag(self):
         """Should pass force=True when --force is given."""
@@ -277,7 +313,7 @@ class TestMain:
             mock_dl.return_value = "/tmp/model"
             sys.argv = ["download_model.py", "/tmp/model", "--force"]
             main()
-            mock_dl.assert_called_once_with("/tmp/model", force=True)
+            mock_dl.assert_called_once_with("/tmp/model", force=True, model_size="small")
 
     def test_main_short_force_flag(self):
         """Should pass force=True when -f is given."""
@@ -285,7 +321,23 @@ class TestMain:
             mock_dl.return_value = "/tmp/model"
             sys.argv = ["download_model.py", "/tmp/model", "-f"]
             main()
-            mock_dl.assert_called_once_with("/tmp/model", force=True)
+            mock_dl.assert_called_once_with("/tmp/model", force=True, model_size="small")
+
+    def test_main_model_flag(self):
+        """Should pass model_size='base' when --model base is given."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.return_value = "/tmp/model"
+            sys.argv = ["download_model.py", "/tmp/model", "--model", "base"]
+            main()
+            mock_dl.assert_called_once_with("/tmp/model", force=False, model_size="base")
+
+    def test_main_short_model_flag(self):
+        """Should pass model_size='medium' when -m medium is given."""
+        with patch("scripts.download_model.download_model") as mock_dl:
+            mock_dl.return_value = "/tmp/model"
+            sys.argv = ["download_model.py", "/tmp/model", "-m", "medium"]
+            main()
+            mock_dl.assert_called_once_with("/tmp/model", force=False, model_size="medium")
 
     def test_main_download_error(self):
         """Should exit with code 1 on error."""
