@@ -47,6 +47,10 @@ This means a word spoken in shouting ("GRIM-JAW attacked") keeps its all-caps fo
 
 SQLite supports WAL mode for concurrent reads. Both the bot and transcriber access the same database file. Enable WAL mode to allow the transcriber to read while the bot writes. Locking is handled at the application level (status field transitions).
 
+### Delivery Loop Database Access (Bug #17)
+
+The delivery loop polls for sessions ready to be delivered (status = COMPLETE, transcript_path set, thread_id NULL). It previously accessed the database's private `_cursor()` context manager directly, coupling it to the database's internal implementation. It now calls the public `Database.get_sessions_for_delivery()` method instead, which returns a list of `{"id": session_id}` dicts ordered by `ended_at`. The delivery loop has no direct SQL access and no unnecessary commit after the SELECT query.
+
 ### py-cord Recording After-Callback
 
 py-cord 2.8.0's `start_recording(sink, callback)` stores `callback` as an `AudioReader.after` callback. When `stop_recording()` is called, py-cord invokes `after(exc)` **synchronously** from the voice client's thread — it receives the exception (or None), NOT the sink. The callback must be a regular (sync) callable, not a coroutine function.

@@ -130,6 +130,52 @@ class TestSessionManagement:
         assert "s1" in ids
         assert "s2" in ids
 
+    def test_get_sessions_for_delivery_returns_complete_with_transcript(self, db):
+        """Only complete sessions with a transcript path and no thread_id are returned."""
+        _make_session(db, sid="s1", guild="111", channel="222")
+        db.end_session("s1")
+        db.set_transcript_path("s1", "/data/transcripts/s1.txt")
+        sessions = db.get_sessions_for_delivery()
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+
+    def test_get_sessions_for_delivery_excludes_undelivered_without_transcript(self, db):
+        """Sessions without a transcript path are not returned."""
+        _make_session(db, sid="s1", guild="111", channel="222")
+        db.end_session("s1")
+        sessions = db.get_sessions_for_delivery()
+        assert sessions == []
+
+    def test_get_sessions_for_delivery_excludes_already_delivered(self, db):
+        """Sessions that already have a thread_id are not returned."""
+        _make_session(db, sid="s1", guild="111", channel="222")
+        db.end_session("s1")
+        db.set_transcript_path("s1", "/data/transcripts/s1.txt")
+        db.set_thread_id("s1", "thread123")
+        sessions = db.get_sessions_for_delivery()
+        assert sessions == []
+
+    def test_get_sessions_for_delivery_excludes_incomplete(self, db):
+        """Sessions that are not complete are not returned."""
+        _make_session(db, sid="s1", guild="111", channel="222")
+        # Session is still recording (status = RECORDING)
+        sessions = db.get_sessions_for_delivery()
+        assert sessions == []
+
+    def test_get_sessions_for_delivery_ordered_by_ended_at(self, db):
+        """Oldest completed sessions are delivered first."""
+        _make_session(db, sid="s1", guild="111", channel="222")
+        db.end_session("s1")
+        db.set_transcript_path("s1", "/data/transcripts/s1.txt")
+
+        _make_session(db, sid="s2", guild="333", channel="444")
+        db.end_session("s2")
+        db.set_transcript_path("s2", "/data/transcripts/s2.txt")
+
+        sessions = db.get_sessions_for_delivery()
+        ids = [s["id"] for s in sessions]
+        assert ids == ["s1", "s2"]
+
 
 class TestAudioFiles:
     """Tests for audio file tracking."""

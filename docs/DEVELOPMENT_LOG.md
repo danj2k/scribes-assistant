@@ -627,3 +627,22 @@ The `_match_case()` call is applied at both correction stages (exact match and f
 - `bot/commands.py` — removed `bot._voice_clients` initialisation and assignment (3 lines)
 
 **Impact:** No functional change. Dead code removed. 243/243 tests pass (no new tests — the attribute was never referenced in tests or any other code).
+
+---
+
+## Bug #17: Delivery loop accesses private _cursor() method
+
+**Date:** 2026-07-11
+
+**Problem:** The delivery loop in `bot/delivery.py` used `self.db._cursor()` (a private context manager) to run a raw SQL query polling for sessions ready for delivery. This coupled the delivery loop to the database's internal implementation and included an unnecessary `commit()` after a SELECT.
+
+**Fix:** Added a public `Database.get_sessions_for_delivery()` method that encapsulates the query (status = COMPLETE, transcript_path IS NOT NULL, thread_id IS NULL, ordered by ended_at). The delivery loop's `_poll()` method now calls this public API instead of accessing the private cursor. Removed the unused `STATUS_COMPLETE` import from `delivery.py`.
+
+**Files changed:**
+- `shared/database.py` — added `get_sessions_for_delivery()` method
+- `bot/delivery.py` — replaced `_cursor()` usage with `get_sessions_for_delivery()`, removed unused `STATUS_COMPLETE` import
+- `tests/test_database.py` — 5 new tests for `get_sessions_for_delivery()`
+- `docs/ARCHITECTURE.md` — updated delivery flow step 1
+- `docs/IMPLEMENTATION_NOTES.md` — added "Delivery Loop Database Access" section
+
+**Impact:** 248/248 tests pass (5 new). The delivery loop no longer reaches into the database's internals — all queries go through the public API.

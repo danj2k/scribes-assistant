@@ -207,6 +207,23 @@ class Database:
         with self._cursor() as cur:
             cur.execute("UPDATE sessions SET thread_id = ? WHERE id = ?", (thread_id, session_id))
 
+    def get_sessions_for_delivery(self) -> list[dict]:
+        """Return sessions ready for delivery to Discord.
+
+        A session is deliverable when it has a transcript file and has not
+        yet been posted to a thread (thread_id is NULL).  Ordered by
+        ended_at so the oldest completed session is delivered first.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT id FROM sessions
+                   WHERE status = ? AND transcript_path IS NOT NULL
+                     AND thread_id IS NULL
+                   ORDER BY ended_at""",
+                (STATUS_COMPLETE,),
+            )
+            return [{"id": row[0]} for row in cur.fetchall()]
+
     def set_transcript_path(self, session_id: str, transcript_path: str):
         """Set the transcript file path and mark session as complete."""
         with self._cursor() as cur:

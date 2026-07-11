@@ -139,7 +139,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 
 ### Delivery (bot-driven)
 
-1. Bot polls queue, finds session with status COMPLETE and transcript_path set
+1. Bot polls queue via `Database.get_sessions_for_delivery()` (public API — no direct SQL or private cursor access in the delivery loop), finds sessions with status COMPLETE, transcript_path set, and thread_id NULL
 2. Reads the already-corrected transcript file from shared volume (no lexicon correction in the delivery loop)
 3. Uploads as Discord file attachment to the transcript channel
 4. Updates status to DELIVERED (or marks as complete)

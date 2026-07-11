@@ -9,7 +9,7 @@ from pathlib import Path
 
 import discord
 
-from shared.database import Database, STATUS_COMPLETE
+from shared.database import Database
 
 
 class DeliveryLoop:
@@ -55,18 +55,8 @@ class DeliveryLoop:
     
     async def _poll(self):
         """Check for completed transcripts and deliver them."""
-        # Find sessions that are complete but haven't been delivered yet
-        # (transcript_path set but thread hasn't been notified)
-        with self.db._cursor() as cur:
-            cur.execute(
-                "SELECT * FROM sessions WHERE status = ? AND transcript_path IS NOT NULL "
-                "AND thread_id IS NULL ORDER BY started_at",
-                (STATUS_COMPLETE,),
-            )
-            rows = cur.fetchall()
-        
-        for row in rows:
-            session = dict(row)
+        sessions = self.db.get_sessions_for_delivery()
+        for session in sessions:
             await self._deliver(session)
     
     async def _deliver(self, session: dict):
