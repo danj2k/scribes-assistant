@@ -41,13 +41,26 @@ class Database:
                 );
 
                 CREATE TABLE IF NOT EXISTS audio_files (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    file_path  TEXT NOT NULL,
-                    size_bytes INTEGER,
-                    status     TEXT NOT NULL DEFAULT 'queued',
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id      TEXT NOT NULL,
+                    file_path       TEXT NOT NULL,
+                    size_bytes      INTEGER,
+                    status          TEXT NOT NULL DEFAULT 'queued',
                     transcript_text TEXT,
+                    discord_user_id TEXT,
+                    speaker_name    TEXT,
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS transcript_segments (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id  TEXT NOT NULL,
+                    file_id     INTEGER NOT NULL,
+                    start_time  REAL NOT NULL,
+                    end_time    REAL,
+                    text        TEXT NOT NULL,
+                    seq         INTEGER NOT NULL,
+                    FOREIGN KEY (file_id) REFERENCES audio_files(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS lexicon (
@@ -150,12 +163,31 @@ class Database:
 
     # -- audio file tracking -------------------------------------------------
 
-    def add_audio_file(self, session_id: str, filepath: str, size_bytes: int | None = None):
-        """Record an audio file associated with a session."""
+    def add_audio_file(
+        self,
+        session_id: str,
+        filepath: str,
+        size_bytes: int | None = None,
+        discord_user_id: str | None = None,
+        speaker_name: str | None = None,
+    ):
+        """Record an audio file associated with a session.
+
+        Args:
+            session_id: The session this audio file belongs to.
+            filepath: Path to the WAV file on the shared volume.
+            size_bytes: File size in bytes.
+            discord_user_id: The Discord user ID of the speaker (for identity).
+            speaker_name: Display name of the speaker (resolved by the bot
+                from the guild member cache, since the transcriber has no
+                Discord API access).
+        """
         with self._cursor() as cur:
             cur.execute(
-                "INSERT INTO audio_files (session_id, file_path, size_bytes) VALUES (?, ?, ?)",
-                (session_id, filepath, size_bytes),
+                """INSERT INTO audio_files
+                   (session_id, file_path, size_bytes, discord_user_id, speaker_name)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, filepath, size_bytes, discord_user_id, speaker_name),
             )
 
     def get_audio_files(self, session_id: str) -> list[dict]:
@@ -197,6 +229,83 @@ class Database:
                 "UPDATE audio_files SET status = 'transcribed', transcript_text = ? WHERE id = ?",
                 (text, file_id),
             )
+
+    # -- transcript segments -------------------------------------------------
+
+    def add_transcript_segment(
+        self,
+        session_id: str,
+        file_id: int,
+        start_time: float,
+        text: str,
+        seq: int,
+        end_time: float | None = None,
+    ):
+        """Store a timestamped transcript segment for interleaved merging.
+
+        Each segment is a chunk of recognised speech with its start time
+        (in seconds from the start of that speaker's audio file). Since all
+        speakers' WAV files share the same zero point (recording starts at
+        /start), segments from different files can be merged by sorting on
+        start_time.
+
+        Args:
+            session_id: The session this segment belongs to.
+            file_id: The audio_files.id this segment was transcribed from.
+            start_time: Seconds from the start of the audio file.
+            text: The recognised text for this segment.
+            seq: Sequence number within the file (for tie-breaking).
+            end_time: Optional end time in seconds.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO transcript_segments
+                   (session_id, file_id, start_time, end_time, text, seq)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_id, file_id, start_time, end_time, text, seq),
+            )
+
+    def get_transcript_segments(self, session_id: str) -> list[dict]:
+        """Return all transcript segments for a session, ordered by time.
+
+        Segments are sorted by start_time, then by seq for tie-breaking
+        when two segments from different speakers share the same timestamp.
+        Each segment dict includes the speaker_name from the associated
+        audio_files row.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT ts.*, af.speaker_name, af.discord_user_id
+                   FROM transcript_segments ts
+                   JOIN audio_files af ON ts.file_id = af.id
+                   WHERE ts.session_id = ?
+                   ORDER BY ts.start_time, ts.seq""",
+                (session_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_session_file_status(self, session_id: str) -> dict:
+        """Return a summary of audio file statuses for a session.
+
+        Returns a dict with keys: total, queued, transcribing, transcribed,
+        failed. The transcriber uses this to determine whether all files
+        for a session have been processed and the merged transcript can
+        be written.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT status, COUNT(*) as cnt FROM audio_files WHERE session_id = ? GROUP BY status",
+                (session_id,),
+            )
+            counts = {r["status"]: r["cnt"] for r in cur.fetchall()}
+        total = sum(counts.values())
+        return {
+            "total": total,
+            "queued": counts.get("queued", 0),
+            "transcribing": counts.get("transcribing", 0),
+            "transcribed": counts.get("transcribed", 0),
+            "failed": counts.get("failed", 0),
+        }
 
     # -- lexicon -------------------------------------------------------------
 

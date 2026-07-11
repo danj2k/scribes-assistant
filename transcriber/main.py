@@ -22,6 +22,50 @@ from transcriber.worker import download_model, TranscriptionWorker
 logger = logging.getLogger("scribes.transcriber")
 
 
+def _format_timestamp(seconds: float) -> str:
+    """Format seconds as [HH:MM:SS] for transcript timestamps."""
+    total = int(seconds)
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _build_interleaved_transcript(db: Database, session_id: str) -> str:
+    """Build a timestamped, interleaved transcript for a session.
+
+    Queries all transcript_segments for the session (already sorted by
+    start_time) and formats each as:
+
+        [HH:MM:SS] SpeakerName: dialogue
+
+    Falls back to per-speaker blocks if no segments are available
+    (e.g. the recogniser didn't produce timestamps).
+    """
+    segments = db.get_transcript_segments(session_id)
+
+    if segments:
+        lines = []
+        for seg in segments:
+            ts = _format_timestamp(seg["start_time"])
+            speaker = seg.get("speaker_name") or seg.get("discord_user_id") or "Unknown"
+            lines.append(f"[{ts}] {speaker}: {seg['text']}")
+        return "\n".join(lines)
+
+    # Fallback: per-speaker blocks using audio_files.transcript_text
+    audio_files = db.get_audio_files(session_id)
+    if not audio_files:
+        return ""
+
+    blocks = []
+    for af in audio_files:
+        speaker = af.get("speaker_name") or af.get("discord_user_id") or "Unknown"
+        text = af.get("transcript_text") or ""
+        if text.strip():
+            blocks.append(f"{speaker}:\n{text.strip()}")
+    return "\n\n".join(blocks)
+
+
 def setup_logging(config: Config):
     """Configure root logger with console (stdout) and rotating file handlers.
 
@@ -106,26 +150,52 @@ def run_worker(config_path: str = "/app/config.yaml"):
 
             # Run transcription
             try:
-                text = worker.transcribe(filepath, hotwords=hotwords)
-                if text is None:
+                result = worker.transcribe(filepath, hotwords=hotwords)
+                if result is None:
                     raise RuntimeError('Transcription returned None')
 
-                # Write transcript to shared filesystem
-                transcript_dir = Path("/data/transcripts")
-                transcript_dir.mkdir(parents=True, exist_ok=True)
-                transcript_path = transcript_dir / f"{session_id}.txt"
-                transcript_path.write_text(text)
+                # Store timestamped segments in the DB for later merging.
+                # Each segment's start_time is relative to the start of this
+                # speaker's audio file. Since all speakers' WAV files share
+                # the same zero point (recording starts at /start), segments
+                # from different files can be merged chronologically.
+                for seq, segment in enumerate(result.segments):
+                    db.add_transcript_segment(
+                        session_id=session_id,
+                        file_id=file_id,
+                        start_time=segment.start_time,
+                        text=segment.text,
+                        seq=seq,
+                    )
 
-                # Mark session as complete with transcript path
-                db.set_transcript_path(session_id, str(transcript_path))
-                db.add_transcript(file_id, text)
+                # Also store the full text on the audio file row as a
+                # fallback for when timestamp segments aren't available.
+                db.add_transcript(file_id, result.text)
 
                 logger.info(f"File {file_id} transcribed successfully")
 
-                # Check if all files for this session are done
-                remaining = db.get_session_queued_files(session_id)
-                if not remaining:
-                    logger.info(f"All files transcribed for session {session_id}")
+                # Check if all files for this session are done.
+                # Only when the last file is transcribed do we merge all
+                # segments and write the final transcript. This fixes the
+                # partial-delivery bug where each file's transcript was
+                # written separately, overwriting the previous one.
+                status = db.get_session_file_status(session_id)
+                if status["total"] > 0 and status["queued"] == 0 and status["transcribing"] == 0:
+                    logger.info(
+                        f"All files transcribed for session {session_id}, "
+                        f"building merged transcript"
+                    )
+                    transcript_text = _build_interleaved_transcript(db, session_id)
+
+                    transcript_dir = Path("/data/transcripts")
+                    transcript_dir.mkdir(parents=True, exist_ok=True)
+                    transcript_path = transcript_dir / f"{session_id}.txt"
+                    transcript_path.write_text(transcript_text)
+
+                    db.set_transcript_path(session_id, str(transcript_path))
+                    logger.info(
+                        f"Session {session_id}: merged transcript written to {transcript_path}"
+                    )
 
             except Exception as e:
                 logger.error(f"Transcription failed for file {file_id}: {e}")

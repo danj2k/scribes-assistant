@@ -199,3 +199,49 @@ the model size hardcoded into the directory name. Two independent problems:
 - Updated the transcriber responsibilities list to say "Update session status to COMPLETE" (not TRANSCRIBED).
 
 **Impact:** The status flow now correctly reflects the architecture: RECORDING -> QUEUED (on /stop) -> TRANSCRIBING (transcriber picks up) -> COMPLETE (transcriber finishes). Users see "Queued" after `/stop`, which accurately represents that transcription is pending. The delivery loop only picks up sessions after transcription is actually complete.
+
+## 2026-07-11 — Bug Fix #1/#2: Timestamped Interleaved Transcripts
+
+### Bug #1: Multiple audio files per session overwrite the same transcript file
+### Bug #2: Delivery loop delivers partial transcripts
+
+**Symptoms:**
+1. When a session had multiple speakers (one WAV per user), the transcriber wrote each speaker's transcript to the same path (`{session_id}.txt`), so only the last speaker's transcript survived — all previous transcriptions were overwritten.
+2. The delivery loop could pick up a session after the first file was done, delivering only that speaker's transcript and setting `thread_id` to prevent re-delivery. Remaining files' transcriptions were lost.
+
+**Root cause:** The transcriber's main loop called `set_transcript_path()` (which sets `STATUS_COMPLETE` and triggers delivery) after each individual audio file, rather than waiting for all files in the session to be processed.
+
+**Fix — Database (shared/database.py):**
+- Added `discord_user_id` and `speaker_name` columns to the `audio_files` table schema. The bot resolves display names from the guild member cache and stores them — the transcriber has no Discord API access.
+- Added `transcript_segments` table: `id`, `session_id`, `file_id`, `start_time`, `end_time` (nullable), `text`, `seq`. Stores timestamped chunks of recognised speech for chronological merging.
+- Updated `add_audio_file()` to accept `discord_user_id` and `speaker_name` parameters.
+- Added `add_transcript_segment()` to insert individual segments.
+- Added `get_transcript_segments()` to retrieve all segments for a session, ordered by start_time then seq.
+- Added `get_session_file_status()` to return counts of audio files by status (queued, transcribing, transcribed, failed, total) — used to determine when all files for a session are done.
+
+**Fix — Bot (bot/commands.py):**
+- Updated `recording_finished_callback` to resolve each speaker's Discord user ID and display name from the guild member cache, and pass them to `add_audio_file()`.
+
+**Fix — Worker (transcriber/worker.py):**
+- Added `TranscriptSegment` and `TranscriptionResult` dataclasses.
+- Changed `transcribe()` return type from `Optional[str]` to `Optional[TranscriptionResult]`, containing both the full text and a list of timestamped segments.
+- Added `_build_segments()` to group sherpa-onnx token-level timestamps into phrase-level segments by detecting sentence boundaries (punctuation tokens) and natural pauses (timestamp gaps > 1 second).
+
+**Fix — Transcriber main loop (transcriber/main.py):**
+- After each file is transcribed, segments are stored in the database and the file is marked as transcribed.
+- The loop then checks `get_session_file_status()` — only when no files remain queued or transcribing does it proceed to merge.
+- Added `_build_interleaved_transcript()` which queries all segments for the session, sorts by `start_time` then `seq`, and formats as `[HH:MM:SS] SpeakerName: dialogue`.
+- `set_transcript_path()` is now called only once, after the merged transcript is written — fixing bug #2 (partial delivery) as well.
+- Fallback: if no timestamped segments exist (e.g. recogniser returned empty timestamps), the merge falls back to per-speaker blocks using the `transcript_text` column, ordered by file ID.
+
+**Fix — Documentation:**
+- ARCHITECTURE.md: Updated audio_files table description (added discord_user_id, speaker_name columns), added transcript_segments table description, updated transcription data flow to describe segment capture and interleaved merge, removed stale "voice fingerprint alignment" reference and the voice fingerprinting open question.
+- PROJECT.md: Replaced "speaker diarisation" with accurate description of per-speaker capture and chronological merge.
+
+**Tests:**
+- Added 27 new tests (148 total, all passing):
+  - `test_database.py`: segment insertion/retrieval, session file status counts, audio file with speaker info.
+  - `test_transcript_merge.py`: interleaved merge with multiple speakers, tie-breaking by seq, fallback to per-speaker blocks, empty segments, timestamp formatting.
+  - `test_transcriber_worker.py`: updated to use `TranscriptionResult` return type, added segment grouping tests.
+
+**Impact:** Multi-speaker sessions now produce a single interleaved transcript with all speakers' dialogue in chronological order, each line timestamped and labelled with the speaker's name. The delivery loop only fires once, after the complete transcript is written.

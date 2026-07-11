@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Scribe's Assistant is a Discord bot for automated transcription of tabletop RPG sessions (initially D&D). It records voice from Discord voice channels, transcribes the audio with speaker diarisation, and posts a timestamped transcript back to the game channel.
+Scribe's Assistant is a Discord bot for automated transcription of tabletop RPG sessions (initially D&D). It records voice from Discord voice channels (one audio stream per speaker), transcribes each stream with a local Whisper-based model, merges the results chronologically using token-level timestamps, and posts a timestamped, speaker-labelled transcript back to the game channel.
 
 ## Goals
 

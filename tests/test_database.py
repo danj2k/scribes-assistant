@@ -141,6 +141,121 @@ class TestLexicon:
         assert result is False
 
 
+class TestTranscriptSegments:
+    """Tests for transcript_segments table and related methods."""
+
+    def test_add_transcript_segment(self, db):
+        """A segment can be inserted and retrieved."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav", discord_user_id="100", speaker_name="Theron")
+        db.add_transcript_segment("sess1", file_id=1, start_time=3.5, text="Hello world", seq=0)
+        segs = db.get_transcript_segments("sess1")
+        assert len(segs) == 1
+        assert segs[0]["text"] == "Hello world"
+        assert segs[0]["start_time"] == 3.5
+        assert segs[0]["speaker_name"] == "Theron"
+
+    def test_get_transcript_segments_ordered_by_time(self, db):
+        """Segments are returned sorted by start_time, then seq."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav", discord_user_id="100", speaker_name="Alice")
+        db.add_audio_file("sess1", "/tmp/b.wav", discord_user_id="200", speaker_name="Bob")
+
+        # Insert out of time order to verify sorting
+        db.add_transcript_segment("sess1", file_id=1, start_time=10.0, text="Alice later", seq=0)
+        db.add_transcript_segment("sess1", file_id=2, start_time=2.0, text="Bob early", seq=0)
+        db.add_transcript_segment("sess1", file_id=1, start_time=5.0, text="Alice mid", seq=1)
+
+        segs = db.get_transcript_segments("sess1")
+        assert len(segs) == 3
+        assert segs[0]["start_time"] == 2.0
+        assert segs[0]["speaker_name"] == "Bob"
+        assert segs[1]["start_time"] == 5.0
+        assert segs[1]["speaker_name"] == "Alice"
+        assert segs[2]["start_time"] == 10.0
+
+    def test_get_transcript_segments_empty(self, db):
+        """No segments returns empty list."""
+        _make_session(db)
+        segs = db.get_transcript_segments("sess1")
+        assert segs == []
+
+    def test_get_transcript_segments_includes_speaker(self, db):
+        """Retrieved segments include speaker_name from joined audio_files."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav", discord_user_id="42", speaker_name="Gandalf")
+        db.add_transcript_segment("sess1", file_id=1, start_time=0.0, text="You shall not pass!", seq=0)
+        segs = db.get_transcript_segments("sess1")
+        assert segs[0]["speaker_name"] == "Gandalf"
+        assert segs[0]["discord_user_id"] == "42"
+
+
+class TestSessionFileStatus:
+    """Tests for get_session_file_status."""
+
+    def test_status_all_queued(self, db):
+        """All files queued."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav")
+        db.add_audio_file("sess1", "/tmp/b.wav")
+        status = db.get_session_file_status("sess1")
+        assert status["total"] == 2
+        assert status["queued"] == 2
+        assert status["transcribing"] == 0
+        assert status["transcribed"] == 0
+
+    def test_status_mixed(self, db):
+        """Mixed statuses are counted correctly."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav")  # queued
+        db.add_audio_file("sess1", "/tmp/b.wav")  # will be transcribed
+        db.update_file_status(2, "transcribing")
+        db.add_transcript(2, "hello")  # sets to transcribed
+        status = db.get_session_file_status("sess1")
+        assert status["total"] == 2
+        assert status["queued"] == 1
+        assert status["transcribing"] == 0
+        assert status["transcribed"] == 1
+
+    def test_status_with_failed(self, db):
+        """Failed files are counted."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav")
+        db.add_audio_file("sess1", "/tmp/b.wav")
+        db.update_file_status(1, "failed")
+        status = db.get_session_file_status("sess1")
+        assert status["total"] == 2
+        assert status["failed"] == 1
+        assert status["queued"] == 1
+
+    def test_status_empty_session(self, db):
+        """No files returns all zeros."""
+        _make_session(db)
+        status = db.get_session_file_status("sess1")
+        assert status["total"] == 0
+        assert status["queued"] == 0
+
+
+class TestAudioFileSpeakerFields:
+    """Tests for discord_user_id and speaker_name on audio_files."""
+
+    def test_add_audio_file_with_speaker(self, db):
+        """Audio file stores discord_user_id and speaker_name."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav", discord_user_id="123", speaker_name="Theron")
+        files = db.get_audio_files("sess1")
+        assert files[0]["discord_user_id"] == "123"
+        assert files[0]["speaker_name"] == "Theron"
+
+    def test_add_audio_file_without_speaker(self, db):
+        """Audio file works without speaker fields (defaults to None)."""
+        _make_session(db)
+        db.add_audio_file("sess1", "/tmp/a.wav")
+        files = db.get_audio_files("sess1")
+        assert files[0]["discord_user_id"] is None
+        assert files[0]["speaker_name"] is None
+
+
 class TestDatabaseLifecycle:
     """Tests for database connection lifecycle."""
 

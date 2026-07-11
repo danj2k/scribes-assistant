@@ -11,6 +11,7 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Optional
+from dataclasses import dataclass, field
 
 # Module-level imports for testability -- tests patch these names
 try:
@@ -26,6 +27,31 @@ except ImportError:
 import urllib.request
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TranscriptSegment:
+    """A timestamped chunk of recognised speech.
+
+    Attributes:
+        start_time: Seconds from the start of the audio file.
+        text: The recognised text for this segment.
+    """
+    start_time: float
+    text: str
+
+
+@dataclass
+class TranscriptionResult:
+    """Result of transcribing one audio file.
+
+    Attributes:
+        text: The full transcribed text (all segments joined).
+        segments: Timestamped segments for interleaved merging.
+            Empty list if the recogniser didn't produce timestamps.
+    """
+    text: str
+    segments: list[TranscriptSegment] = field(default_factory=list)
 
 
 class TranscriptionWorker:
@@ -59,8 +85,13 @@ class TranscriptionWorker:
             logger.error("Failed to load model: %s", e)
             raise
 
-    def transcribe(self, audio_path: str, hotwords: Optional[str] = None) -> Optional[str]:
-        """Transcribe an audio file. Returns text or None on error.
+    def transcribe(self, audio_path: str, hotwords: Optional[str] = None) -> Optional[TranscriptionResult]:
+        """Transcribe an audio file. Returns TranscriptionResult or None on error.
+
+        The result contains the full text and a list of timestamped segments.
+        Segments are grouped by sentence boundaries (punctuation tokens) or
+        gaps in audio > 1 second. Each segment's start_time is the timestamp
+        of its first token.
 
         Args:
             audio_path: Path to the WAV file to transcribe.
@@ -83,12 +114,74 @@ class TranscriptionWorker:
             result = stream.result
             text = result.text.strip()
 
-            logger.debug("Transcribed %s: %d chars", audio_path, len(text))
-            return text
+            # Extract timestamped segments from token-level data.
+            # sherpa-onnx provides result.tokens (list of token strings)
+            # and result.timestamps (list of floats, seconds from start).
+            segments = self._build_segments(result)
+
+            logger.debug(
+                "Transcribed %s: %d chars, %d segments",
+                audio_path, len(text), len(segments),
+            )
+            return TranscriptionResult(text=text, segments=segments)
 
         except Exception as e:
             logger.error("Transcription failed for %s: %s", audio_path, e)
             return None
+
+    @staticmethod
+    def _build_segments(result) -> list[TranscriptSegment]:
+        """Group token-level timestamps into sentence-like segments.
+
+        Tokens are grouped into segments by:
+        1. Sentence-ending punctuation (".", "?", "!") starts a new segment
+        2. A gap > 1 second between consecutive tokens starts a new segment
+
+        Each segment's start_time is the timestamp of its first token.
+        """
+        tokens = getattr(result, "tokens", None)
+        timestamps = getattr(result, "timestamps", None)
+
+        # No timestamp data available — return empty list (caller falls
+        # back to per-speaker blocks).
+        if not tokens or not timestamps or len(tokens) != len(timestamps):
+            return []
+
+        segments: list[TranscriptSegment] = []
+        current_tokens: list[str] = []
+        current_start: float = 0.0
+        prev_time: float = 0.0
+        sentence_endings = {".", "?", "!", "。", "?", "!", "？", "！"}
+
+        for i, (token, ts) in enumerate(zip(tokens, timestamps)):
+            if not current_tokens:
+                current_start = ts
+
+            current_tokens.append(token)
+
+            # Check if this token ends a sentence or has a large gap before next
+            is_sentence_end = token.strip() in sentence_endings
+            is_last = i == len(tokens) - 1
+
+            if is_last:
+                next_ts = None
+            else:
+                next_ts = timestamps[i + 1]
+
+            gap = (next_ts - ts) if next_ts is not None else 0.0
+            large_gap = gap > 1.0
+
+            if is_sentence_end or is_last or large_gap:
+                seg_text = "".join(current_tokens).strip()
+                if seg_text:
+                    segments.append(TranscriptSegment(
+                        start_time=current_start, text=seg_text
+                    ))
+                current_tokens = []
+
+            prev_time = ts
+
+        return segments
 
 
 # Expected SHA-256 hash for the model archive

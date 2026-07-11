@@ -385,6 +385,11 @@ def recording_finished_callback(bot, session_id, guild_id, channel_id):
         """Process recorded audio and save to disk."""
         db = bot.db
 
+        # Resolve guild for member lookup — needed to map user IDs
+        # to display names. The transcriber has no Discord API access,
+        # so the bot must store speaker identity in the DB now.
+        guild = bot.get_guild(guild_id) if hasattr(bot, "get_guild") else None
+
         # Ensure recording directory exists
         rec_dir = f"/data/recordings/{session_id}"
         os.makedirs(rec_dir, exist_ok=True)
@@ -397,11 +402,22 @@ def recording_finished_callback(bot, session_id, guild_id, channel_id):
             with open(filepath, "wb") as f:
                 f.write(audio_data.getbuffer())
 
+            # Resolve speaker display name from guild member cache.
+            # user_id is an int (Discord user ID); fall back to str(id)
+            # if the member has left the guild or the cache is cold.
+            speaker_name = str(user_id)
+            if guild is not None:
+                member = guild.get_member(user_id)
+                if member is not None:
+                    speaker_name = member.display_name
+
             size = audio_data.getbuffer().nbytes
             db.add_audio_file(
                 session_id=session_id,
                 filepath=filepath,
                 size_bytes=size,
+                discord_user_id=str(user_id),
+                speaker_name=speaker_name,
             )
             audio_count += 1
 

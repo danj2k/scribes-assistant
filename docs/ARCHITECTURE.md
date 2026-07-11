@@ -36,8 +36,10 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Poll the SQLite queue for sessions with status QUEUED
 - Load the lexicon from SQLite
 - Run sherpa-onnx Whisper transcription with initial prompt injection
-- Generate word-level timestamps for speaker diarisation
-- Format and save transcripts as plain text
+- Capture token-level timestamps for interleaved transcript merging
+- Store per-file transcript segments in the database
+- Merge all speakers' segments chronologically after ALL files are transcribed
+- Format and save the merged transcript as plain text
 - Update session status to COMPLETE in the SQLite queue via set_transcript_path()
 
 **Key dependencies:**
@@ -79,7 +81,18 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 - timestamps for lifecycle tracking
 
 **audio_files** — per-speaker audio files within a session
-- session_id (FK), speaker_index, file_path
+- session_id (FK), file_path, size_bytes
+- discord_user_id — Discord user ID of the speaker (resolved by the bot)
+- speaker_name — display name of the speaker (resolved by the bot from the guild member cache, since the transcriber has no Discord API access)
+- status — queued / transcribing / transcribed / failed
+- transcript_text — full transcribed text for this file (fallback when timestamps unavailable)
+
+**transcript_segments** — timestamped chunks of recognised speech for interleaved merging
+- id (PK), session_id (FK), file_id (FK→audio_files.id)
+- start_time (REAL) — seconds from the start of the audio file
+- end_time (REAL, nullable) — optional end time
+- text — recognised text for this segment
+- seq — sequence number within the file (for tie-breaking when two segments share the same start_time)
 
 **lexicon** — words for initial-prompt injection
 - word, description, enabled flag
@@ -93,7 +106,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 
 1. User issues /start → bot joins voice channel, creates session with status RECORDING
 2. Bot receives voice data → decodes to WAV (py-cord limitation), writes to shared volume
-3. Speaker identification: initial speaker assignment by join order, with simple voice fingerprint refinement
+3. Bot resolves speaker display names from the guild member cache and stores discord_user_id + speaker_name with each audio file
 4. User issues /stop → bot stops recording, disconnects, and calls end_session() which sets status to QUEUED
 5. Audio files are saved to disk by the recording callback and registered in the audio_files table with status 'queued'
 
@@ -104,10 +117,11 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 3. Loads lexicon from SQLite, builds initial prompt string
 4. Converts WAV files to 16kHz mono via ffmpeg
 5. Runs sherpa-onnx Whisper small model with initial prompt
-6. Produces word-level timestamps, maps to speakers via voice fingerprint alignment
-7. Formats transcript with speaker labels and timestamps
-8. Writes transcript to /data/transcripts/<session_id>.txt
-9. Updates session status to COMPLETE via set_transcript_path()
+6. Captures token-level timestamps from the recogniser result
+7. Groups tokens into segments and stores them in the transcript_segments table with the speaker's name
+8. After ALL audio files for the session are transcribed, queries all segments, sorts by timestamp, and formats as an interleaved transcript: [HH:MM:SS] SpeakerName: dialogue
+9. Writes the merged transcript to /data/transcripts/<session_id>.txt
+10. Updates session status to COMPLETE via set_transcript_path()
 
 ### Delivery (bot-driven)
 
@@ -141,5 +155,4 @@ Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 
 
 ## Open Questions
 
-- Voice fingerprinting approach (how to reliably identify and separate speakers from overlapping audio)
 - Lexicon bulk import/export mechanism

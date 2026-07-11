@@ -30,7 +30,7 @@ class TestWorkerTranscribe:
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
     def test_transcribe_returns_text(self, mock_sf, mock_sherpa):
-        """transcribe returns text from the model."""
+        """transcribe returns TranscriptionResult with text from the model."""
         from transcriber.worker import TranscriptionWorker
 
         mock_sf.read.return_value = (MagicMock(), 16000)
@@ -43,14 +43,19 @@ class TestWorkerTranscribe:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = "Hello world"
+        # No token-level timestamp data on the mock → segments empty
+        mock_stream.result.tokens = None
+        mock_stream.result.timestamps = None
 
         result = worker.transcribe("/tmp/audio.opus")
-        assert result == "Hello world"
+        assert result is not None
+        assert result.text == "Hello world"
+        assert result.segments == []
 
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
     def test_transcribe_empty_audio(self, mock_sf, mock_sherpa):
-        """transcribe returns empty string for silence."""
+        """transcribe returns empty text for silence."""
         from transcriber.worker import TranscriptionWorker
 
         mock_sf.read.return_value = (MagicMock(), 16000)
@@ -63,9 +68,12 @@ class TestWorkerTranscribe:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = ""
+        mock_stream.result.tokens = None
+        mock_stream.result.timestamps = None
 
         result = worker.transcribe("/tmp/silence.opus")
-        assert result == ""
+        assert result is not None
+        assert result.text == ""
 
 
 class TestDownloadModel:
