@@ -113,8 +113,8 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 ### Recording (bot-driven)
 
 1. User issues /start → bot checks get_any_active_session() across ALL guilds; if a session is already active anywhere, returns an ephemeral error ("A recording session is already in progress") and does not create a new session
-2. If no active session exists, bot joins voice channel and creates session with status RECORDING
-3. If the voice channel join fails, the bot calls fail_session() (sets status=FAILED and ended_at), sends an error message, and returns — the session does not block future /start commands because get_active_session() filters on ended_at IS NULL
+2. If no active session exists, bot creates the session record (status=RECORDING), then defers the interaction with `await interaction.response.defer(ephemeral=True)` before attempting the voice channel join. Discord requires an interaction response within 3 seconds; voice join (gateway state change, WebSocket handshake, encryption key exchange) can exceed this under high latency. After deferring, all responses use `interaction.followup.send()` instead of `interaction.response.send_message()`
+3. Bot joins voice channel. If the join fails, the bot calls fail_session() (sets status=FAILED and ended_at), sends a followup error message, and returns — the session does not block future /start commands because get_active_session() filters on ended_at IS NULL
 4. Bot creates a sync after-callback (via make_recording_after_callback) that captures the sink and schedules async audio processing on the event loop, returning a future
 5. Bot starts recording with the sink and callback
 6. User issues /stop → bot calls stop_recording(), which synchronously invokes the after-callback

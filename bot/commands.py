@@ -93,6 +93,14 @@ def setup_commands(bot: commands.Bot):
             channel_id=str(interaction.channel_id),
         )
 
+        # Defer the interaction before the voice channel join. Discord
+        # requires an interaction response within 3 seconds; voice join
+        # involves a gateway state change, WebSocket handshake, and
+        # encryption key exchange that can exceed this deadline under
+        # high latency. After deferring, all responses must use
+        # followup.send() instead of response.send_message().
+        await interaction.response.defer(ephemeral=True)
+
         # Join voice channel and start recording
         try:
             vc = await voice_channel.connect()
@@ -111,7 +119,7 @@ def setup_commands(bot: commands.Bot):
             # get_active_session() to keep returning this dead session and
             # blocking all future recordings in the guild.
             db.fail_session(session_id)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Failed to join voice channel: {e}",
                 ephemeral=True,
             )
@@ -122,7 +130,7 @@ def setup_commands(bot: commands.Bot):
             bot._recording_futures = {}
         bot._recording_futures[interaction.guild_id] = recording_done
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Recording started! Session: `{session_id}`\n"
             f"Joined **{voice_channel.name}**. Use `/stop` when you're done.",
         )

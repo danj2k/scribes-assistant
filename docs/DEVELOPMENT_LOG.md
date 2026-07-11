@@ -754,3 +754,21 @@ The `/help` command was also unrestricted, but this is intentional — `/help` o
 - `docs/DEVELOPMENT_LOG.md` — updated Bug #8 entry to note `/invite` was later addressed; added this entry
 
 **Impact:** 277/277 tests pass (4 new). `/invite` now respects the same permission model as all other commands. `/help` remains open to all users.
+
+---
+
+## Bug #24 — `start_command` doesn't defer interaction before voice connect (3s timeout risk)
+
+**Date:** 2026-07-11
+
+**Problem:** `start_command` in `bot/commands.py` called `voice_channel.connect()` without first deferring the Discord interaction. Discord enforces a 3-second response deadline for slash command interactions. Voice join is a potentially slow async operation — it involves a Discord gateway state change, WebSocket handshake, and encryption key exchange. Under high latency or server load, this can exceed 3 seconds, causing Discord to show "The application did not respond" to the user.
+
+**Fix:** Added `await interaction.response.defer(ephemeral=True)` after the DB session record is created but before the voice channel join attempt. The defer is placed after session creation so that if the voice join fails, `fail_session()` has a valid session ID to operate on. After deferring, all subsequent responses in the command use `interaction.followup.send()` instead of `interaction.response.send_message()` (which would raise an error after a defer). Early-return paths (permission denied, active session already running, user not in a voice channel) do NOT defer — they respond immediately with `response.send_message()` since they complete well within the 3-second deadline.
+
+**Files changed:**
+- `bot/commands.py` — added `await interaction.response.defer(ephemeral=True)` before voice join in `start_command`; switched post-defer responses (success and error) to `interaction.followup.send()`
+- `tests/test_start_command_defer.py` — new test file (8 tests): defer called before connect, success uses followup, voice join failure uses followup, permission denied does not defer, active session does not defer, no voice channel does not defer, defer uses ephemeral=True, session created before voice join failure
+- `docs/ARCHITECTURE.md` — updated Recording flow step 2 to document the defer and step 3 to mention followup
+- `docs/IMPLEMENTATION_NOTES.md` — updated Voice channel join failure section to explain the defer and followup.send pattern
+
+**Impact:** 286/286 tests pass (8 new). `/start` now reliably responds within Discord's interaction deadline regardless of voice gateway latency.
