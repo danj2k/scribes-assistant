@@ -38,7 +38,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - Run sherpa-onnx Whisper transcription with initial prompt injection
 - Generate word-level timestamps for speaker diarisation
 - Format and save transcripts as plain text
-- Update session status to TRANSCRIBED in the SQLite queue
+- Update session status to COMPLETE in the SQLite queue via set_transcript_path()
 
 **Key dependencies:**
 - sherpa-onnx (speech-to-text, Whisper small model)
@@ -75,7 +75,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 **sessions** — one row per recording session
 - session_id (TEXT, PK) — timestamp-based identifier
 - guild_id, voice_channel_id, transcript_channel_id
-- status — CREATED / RECORDING / STOPPED / QUEUED / TRANSCRIBING / TRANSCRIBED / FAILED
+- status — RECORDING / QUEUED / TRANSCRIBING / COMPLETE / FAILED
 - timestamps for lifecycle tracking
 
 **audio_files** — per-speaker audio files within a session
@@ -91,27 +91,27 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 
 ### Recording (bot-driven)
 
-1. User issues /start → bot joins voice channel, creates session with status CREATED
+1. User issues /start → bot joins voice channel, creates session with status RECORDING
 2. Bot receives voice data → decodes to WAV (py-cord limitation), writes to shared volume
 3. Speaker identification: initial speaker assignment by join order, with simple voice fingerprint refinement
-4. User issues /stop → bot updates status to STOPPED, finalises audio files
-5. Bot writes session to queue with status QUEUED
+4. User issues /stop → bot stops recording, disconnects, and calls end_session() which sets status to QUEUED
+5. Audio files are saved to disk by the recording callback and registered in the audio_files table with status 'queued'
 
 ### Transcription (transcriber-driven)
 
 1. Transcriber polls queue, finds session with status QUEUED
-2. Updates status to TRANSCRIBING
+2. Updates the audio file status to TRANSCRIBING
 3. Loads lexicon from SQLite, builds initial prompt string
 4. Converts WAV files to 16kHz mono via ffmpeg
 5. Runs sherpa-onnx Whisper small model with initial prompt
 6. Produces word-level timestamps, maps to speakers via voice fingerprint alignment
 7. Formats transcript with speaker labels and timestamps
 8. Writes transcript to /data/transcripts/<session_id>.txt
-9. Updates status to TRANSCRIBED
+9. Updates session status to COMPLETE via set_transcript_path()
 
 ### Delivery (bot-driven)
 
-1. Bot polls queue, finds session with status TRANSCRIBED
+1. Bot polls queue, finds session with status COMPLETE and transcript_path set
 2. Reads transcript file from shared volume
 3. Uploads as Discord file attachment to the transcript channel
 4. Updates status to DELIVERED (or marks as complete)

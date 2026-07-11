@@ -171,3 +171,31 @@ the model size hardcoded into the directory name. Two independent problems:
   - `test_alphabetical_on_equal_distance_and_length`: "fireball" vs "firebalx" both at distance 1 and length 8 from "firebal" — "fireball" wins alphabetically.
 - **Impact**: Lexicon correction is now fully deterministic. The same transcription input will always produce the same corrected output.
 - **Tests**: 104/104 passing.
+
+## 2026-07-11 -- Bug Fix: end_session sets STATUS_COMPLETE instead of STATUS_QUEUED
+
+### Bug #3: end_session() prematurely marks session as COMPLETE
+
+**Symptom:** When a user issued `/stop`, the session status was immediately set to `COMPLETE`. This caused two problems:
+
+1. `/status` and `/session` displayed a checkmark ("Complete") for sessions that had not yet been transcribed — the user saw "complete" when transcription hadn't even started.
+2. The architecture document describes a flow RECORDING -> QUEUED -> TRANSCRIBING -> COMPLETE, but `end_session()` skipped QUEUED entirely and jumped straight to COMPLETE, making the status flow incoherent.
+
+**Root cause:** Bug #5 (2025-07-09) changed `end_session()` from `STATUS_QUEUED` to `STATUS_COMPLETE` because it was thought that "a session that just ended should not transition back to queued." However, QUEUED is not a terminal status — it is the signal for the transcriber to pick up the session. The session should only move to COMPLETE when the transcriber calls `set_transcript_path()` after successfully producing a transcript. The previous fix conflated "recording has ended" with "session is complete," but in this architecture those are different events separated by the entire transcription step.
+
+**Fix (shared/database.py):**
+- Changed `end_session()` to set status to `STATUS_QUEUED` instead of `STATUS_COMPLETE`.
+- Updated the docstring to explain that QUEUED is the transition state for transcription pickup, and that COMPLETE is set later by `set_transcript_path()`.
+
+**Fix (tests/test_database.py):**
+- Updated `test_end_session` to assert `STATUS_QUEUED` instead of `STATUS_COMPLETE`.
+- Updated the docstring to say "queues for transcription."
+
+**Fix (docs/ARCHITECTURE.md):**
+- Corrected the sessions table status enum from `CREATED / RECORDING / STOPPED / QUEUED / TRANSCRIBING / TRANSCRIBED / FAILED` to `RECORDING / QUEUED / TRANSCRIBING / COMPLETE / FAILED` to match the actual constants in the code.
+- Updated the recording data flow: `/start` creates with status RECORDING (not CREATED), `/stop` calls `end_session()` which sets QUEUED (not STOPPED), and audio files are saved by the recording callback with status 'queued'.
+- Updated the transcription data flow: the transcriber updates the audio file status to TRANSCRIBING (not the session status), and on completion calls `set_transcript_path()` which sets the session to COMPLETE (not TRANSCRIBED).
+- Updated the delivery data flow: the delivery loop finds sessions with status COMPLETE and transcript_path set (not TRANSCRIBED).
+- Updated the transcriber responsibilities list to say "Update session status to COMPLETE" (not TRANSCRIBED).
+
+**Impact:** The status flow now correctly reflects the architecture: RECORDING -> QUEUED (on /stop) -> TRANSCRIBING (transcriber picks up) -> COMPLETE (transcriber finishes). Users see "Queued" after `/stop`, which accurately represents that transcription is pending. The delivery loop only picks up sessions after transcription is actually complete.

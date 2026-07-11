@@ -123,12 +123,17 @@ class Database:
             cur.execute("UPDATE sessions SET status = ? WHERE id = ?", (status, session_id))
 
     def end_session(self, session_id: str):
-        """Mark a session as ended and set the ended_at timestamp."""
+        """Mark a session as ended and queue it for transcription.
+
+        Sets ended_at and transitions status to QUEUED so the transcriber
+        picks it up. The session moves to COMPLETE only when the
+        transcriber calls set_transcript_path().
+        """
         now = datetime.now(timezone.utc).isoformat()
         with self._cursor() as cur:
             cur.execute(
                 "UPDATE sessions SET ended_at = ?, status = ? WHERE id = ?",
-                (now, STATUS_COMPLETE, session_id),
+                (now, STATUS_QUEUED, session_id),
             )
 
     def set_thread_id(self, session_id: str, thread_id: str):

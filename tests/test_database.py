@@ -45,12 +45,12 @@ class TestSessionManagement:
         assert session["status"] == STATUS_COMPLETE
 
     def test_end_session(self, db):
-        """Ending a session sets ended_at timestamp and status to complete."""
+        """Ending a session sets ended_at timestamp and queues for transcription."""
         _make_session(db)
         db.end_session("sess1")
         session = db.get_session("sess1")
         assert session["ended_at"] is not None
-        assert session["status"] == STATUS_COMPLETE
+        assert session["status"] == STATUS_QUEUED
 
     def test_set_thread_id(self, db):
         """Thread ID can be stored on a session."""
