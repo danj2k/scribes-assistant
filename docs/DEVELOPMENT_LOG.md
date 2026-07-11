@@ -384,3 +384,24 @@ Even if the callback had been invoked correctly, `stop_command` called `end_sess
 - Added `test_nested_defaults_are_independent`: loads config (no YAML), mutates `config["discord"]["permissions"]["allowed_roles"]` by appending a value, then asserts that `_DEFAULTS` is unmodified and that a fresh `load_config()` call returns the original empty list. This test would fail with the old shallow copy.
 
 **Impact:** Config defaults are now fully isolated per `load_config()` call. Mutations to returned config dicts cannot corrupt global state. 178/178 tests pass.
+
+---
+
+## Bug #8 — Failed voice join leaves `ended_at = NULL`, blocking all future sessions in that guild
+
+**Date:** 2026-07-11
+
+**Root cause:** In `start_command` (`bot/commands.py`), when the voice channel join fails, the error handler called `db.update_session_status(session_id, STATUS_FAILED)`. This sets only the `status` column — it does NOT set `ended_at`. Since `get_active_session()` filters on `ended_at IS NULL`, the dead session keeps appearing as "active", and all future `/start` commands in that guild fail the "there's already an active session" check. The guild is permanently blocked from recording until manual database intervention.
+
+**Fix:** Changed the error handler to call `db.fail_session(session_id)` (added in Bug #6 fix) instead. `fail_session()` sets BOTH `status = STATUS_FAILED` AND `ended_at = now()`, ensuring `get_active_session()` no longer returns the dead session.
+
+One-line code change in `bot/commands.py`:
+- `db.update_session_status(session_id, STATUS_FAILED)` → `db.fail_session(session_id)`
+
+**Why `fail_session()` already existed:** It was added for Bug #6 (empty recordings) with the exact same pattern — any session that should never produce a transcript must have `ended_at` set to avoid blocking `get_active_session()`. Bug #8 was another instance of the same class of bug: using `update_session_status` when `ended_at` also needs to be set.
+
+**Tests (tests/test_database.py):**
+- `test_update_status_failed_does_not_clear_active`: Demonstrates the bug directly — `update_session_status(STATUS_FAILED)` leaves `ended_at=NULL` and `get_active_session()` still returns the session. Then shows `fail_session()` fixes it by setting `ended_at` and clearing the active session.
+- `test_failed_voice_join_allows_new_session`: End-to-end regression — after a failed session (via `fail_session`), a new session in the same guild can be created and is returned by `get_active_session()`.
+
+**Impact:** Failed voice joins no longer block future recordings. 180/180 tests pass.

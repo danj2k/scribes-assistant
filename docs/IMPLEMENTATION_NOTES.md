@@ -113,6 +113,7 @@ These are normal application logic responses, not exceptions. Use `respond()` or
 Errors that cannot be reported to Discord (connection loss, crashes, model failures) are handled as follows:
 
 - **Discord connection lost** — py-cord handles reconnection automatically with exponential backoff. Log a WARNING on each attempt, INFO when reconnected.
+- **Voice channel join failure** — `start_command` creates the session record before attempting the voice channel join. If the join fails, it calls `fail_session()` (NOT `update_session_status(STATUS_FAILED)`) to set both `status=FAILED` and `ended_at`. Using `update_session_status` alone would leave `ended_at=NULL`, causing `get_active_session()` to keep returning the dead session and block all future `/start` commands in that guild.
 - **Empty recording (nobody spoke)** — the recording callback detects zero audio files, calls `fail_session()` (sets FAILED + ended_at), and resolves the future with 0. `stop_command` informs the user and does not queue for transcription. The transcriber safety net also catches any sessions that slip past the callback.
 - **Transcriber fails mid-job** — update session status to FAILED in SQLite. The bot can check for failed sessions and optionally notify the user. Log the full error traceback.
 - **SQLite lock contention** — WAL mode allows concurrent reads. If a write fails due to a lock, retry with a short backoff (100ms, 3 attempts).

@@ -102,7 +102,11 @@ def setup_commands(bot: commands.Bot):
             )
             vc.start_recording(sink, after_cb)
         except Exception as e:
-            db.update_session_status(session_id, STATUS_FAILED)
+            # fail_session() sets BOTH status=FAILED and ended_at. Using
+            # update_session_status() here would leave ended_at=NULL, causing
+            # get_active_session() to keep returning this dead session and
+            # blocking all future recordings in the guild.
+            db.fail_session(session_id)
             await interaction.response.send_message(
                 f"Failed to join voice channel: {e}",
                 ephemeral=True,
