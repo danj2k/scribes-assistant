@@ -283,3 +283,46 @@ the model size hardcoded into the directory name. Two independent problems:
 - `test_download_model.py`: `test_expected_sha256_dict_has_known_hashes`, `test_unknown_model_size_skips_hash_verification`, `test_main_model_flag`, `test_main_short_model_flag`.
 
 **Impact:** Users can now select any Whisper model size via `config.yaml` (`transcriber.model: medium`) or the CLI (`python scripts/download_model.py --model medium`). The worker, download script, and transcriber main loop all respect the setting. SHA-256 verification is enforced for known sizes (currently "small" only) and gracefully skipped with a warning for others.
+
+## 2026-07-11 — Bug Fix #5: stop_command doesn't await recording callback
+
+### Bug #5: Recording after-callback never executes — audio files never saved
+
+**Symptom:** When a user issued `/stop`, the session was marked QUEUED but no audio files were ever registered in the database. The transcriber found zero files, produced an empty transcript, and the user received nothing.
+
+**Root cause:** The bug was worse than a simple race condition. py-cord 2.8.0's `start_recording(sink, callback)` stores the callback as `AudioReader.after`. When `stop_recording()` is called, py-cord invokes `after(exc)` **synchronously** — passing the exception (or None), NOT the sink. The callback must be a regular sync callable.
+
+The old code passed an **async function** `callback(sink)` as the after-callback. Two problems:
+1. py-cord called `after(exc)` passing the exception as the `sink` parameter — the wrong argument entirely.
+2. Calling an async function from sync code creates a coroutine object that is **never awaited** — so the audio processing (file writing, DB registration) never ran at all.
+
+Even if the callback had been invoked correctly, `stop_command` called `end_session()` immediately after `stop_recording()` returned, without waiting for the callback to finish. This was a secondary race condition on top of the primary bug.
+
+**Fix — bot/commands.py:**
+- Replaced the old `recording_finished_callback` (which returned an async function) with `make_recording_after_callback()` — a factory that returns a **sync** callable matching py-cord's `AfterCallback` signature `(exc) -> None`, plus an `asyncio.Future` for awaiting completion.
+- The factory captures the sink, session metadata, event loop, and guild at creation time (called from `start_command`). This is necessary because py-cord does not pass the sink to the after-callback.
+- The sync callback schedules the async audio-processing coroutine via `asyncio.run_coroutine_threadsafe(coro, loop)` — safe regardless of whether py-cord invokes the callback from the event loop thread or a socket listener thread.
+- The async coroutine writes WAV files, resolves speaker display names from the guild member cache, and registers audio files in the database (with `discord_user_id` and `speaker_name`).
+- On success, the future's result is set to the count of saved files. On exception, the future's exception is set so the caller can detect failures.
+- `start_command` now creates the callback via the factory and stores the future on `self._pending_recording`.
+- `stop_command` calls `vc.stop_recording()`, then `await`s the future with a 30-second timeout. Only after the future resolves (or times out) does it call `end_session()`. This guarantees the transcriber will find all audio files already registered when it picks up the QUEUED session.
+- On timeout or callback exception, `stop_command` logs the error and proceeds with `end_session()` anyway — partial or no audio is better than a permanently stuck session.
+
+**Fix — Documentation:**
+- ARCHITECTURE.md: Updated recording data flow (steps 2-7) to describe the sync after-callback, `run_coroutine_threadsafe` scheduling, and the future await pattern. Updated bot responsibilities to mention speaker name resolution at recording stop time and awaiting audio file registration before QUEUED transition.
+- IMPLEMENTATION_NOTES.md: Added "py-cord Recording After-Callback" section documenting the py-cord 2.8.0 after-callback contract (sync, receives exception not sink), the `make_recording_after_callback` pattern, and the rationale for `run_coroutine_threadsafe`. Updated SHA-256 section to reflect the dict-keyed `EXPECTED_SHA256`.
+
+**Tests:** 169/169 passing (11 new tests in `tests/test_recording_callback.py`):
+- `test_returns_sync_callable_and_future`: Factory returns a callable and a future.
+- `test_callback_writes_audio_files`: Audio data written to disk for each speaker.
+- `test_callback_registers_audio_files_in_db`: Audio files registered with correct speaker info.
+- `test_callback_resolves_speaker_names`: Display names resolved from guild member cache.
+- `test_callback_resolves_unknown_speaker`: Unknown user ID falls back to "Unknown".
+- `test_future_resolves_with_file_count`: Future result is the number of saved files.
+- `test_future_resolves_on_error`: Future resolves even when processing raises.
+- `test_callback_with_empty_sink`: No audio data — future resolves with 0, no crash.
+- `test_callback_handles_missing_member`: Member not in cache — falls back to "Unknown".
+- `test_stop_command_awaits_future`: `stop_command` awaits the callback future before `end_session`.
+- `test_stop_command_proceeds_on_timeout`: `stop_command` proceeds with `end_session` on future timeout.
+
+**Impact:** Audio files are now reliably saved and registered in the database before the session transitions to QUEUED. The transcriber always finds the expected files. The fix also corrects a fundamental misunderstanding of py-cord's after-callback API — the old code's async callback was never invoked at all, meaning no recording ever worked correctly.

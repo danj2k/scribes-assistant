@@ -2,6 +2,7 @@
 
 Implements /start, /stop, /status, /session, /invite, /help, /lexicon.
 """
+import asyncio
 from datetime import datetime, timezone
 import os
 
@@ -91,11 +92,15 @@ def setup_commands(bot: commands.Bot):
         # Join voice channel and start recording
         try:
             vc = await voice_channel.connect()
-            # Start recording — py-cord's WaveSink captures per-user WAV audio
-            vc.start_recording(
-                discord.sinks.WaveSink(),
-                recording_finished_callback(bot, session_id, guild_id, str(interaction.channel_id)),
+            # Start recording — py-cord's WaveSink captures per-user WAV audio.
+            # We capture the sink reference so the after-callback can access it
+            # (py-cord 2.8.0 only passes the exception, not the sink, to the
+            # after callback).
+            sink = discord.sinks.WaveSink()
+            after_cb, recording_done = make_recording_after_callback(
+                bot, session_id, guild_id, str(interaction.channel_id), sink,
             )
+            vc.start_recording(sink, after_cb)
         except Exception as e:
             db.update_session_status(session_id, STATUS_FAILED)
             await interaction.response.send_message(
@@ -104,10 +109,13 @@ def setup_commands(bot: commands.Bot):
             )
             return
 
-        # Store the voice client reference for later
+        # Store the voice client reference and recording future for /stop
         if not hasattr(bot, "_voice_clients"):
             bot._voice_clients = {}
         bot._voice_clients[interaction.guild_id] = vc  # type: ignore
+        if not hasattr(bot, "_recording_futures"):
+            bot._recording_futures = {}
+        bot._recording_futures[interaction.guild_id] = recording_done
 
         await interaction.response.send_message(
             f"Recording started! Session: `{session_id}`\n"
@@ -143,6 +151,23 @@ def setup_commands(bot: commands.Bot):
         if vc and vc.is_connected():
             vc.stop_recording()
             await vc.disconnect()
+
+        # Wait for the recording callback to finish processing audio files
+        # before marking the session as queued. Without this, end_session()
+        # races the callback that writes WAV files and registers them in the
+        # DB — the transcriber would find zero files and produce an empty
+        # transcript.
+        recording_future = getattr(bot, "_recording_futures", {}).pop(interaction.guild_id, None)
+        if recording_future is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(recording_future), timeout=30.0)
+            except asyncio.TimeoutError:
+                bot.logger.warning(
+                    f"Session {session_id}: recording callback timed out after 30s, "
+                    "proceeding with whatever files were registered"
+                )
+            except Exception as e:
+                bot.logger.error(f"Session {session_id}: recording callback failed: {e}")
 
         # Mark session as queued for transcription
         db.end_session(session_id)
@@ -375,54 +400,94 @@ def setup_commands(bot: commands.Bot):
     bot.add_application_command(lexicon_group)
 
 
-def recording_finished_callback(bot, session_id, guild_id, channel_id):
-    """Create a callback for when voice recording finishes.
+def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
+    """Create a py-cord after-callback for recording completion.
 
-    This is called by py-cord when the bot is disconnected or
-    recording is stopped.
+    py-cord 2.8.0's ``after`` callback is a synchronous callable that receives
+    a single ``exception`` argument — it does **not** pass the sink.  We close
+    over the sink here so that the async processing logic can access it.
+
+    The callback may be invoked from a non-event-loop thread (py-cord's socket
+    listener or the AudioReader._stop() path), so we use
+    :func:`asyncio.run_coroutine_threadsafe` to schedule the async audio
+    processing on the bot's event loop.
+
+    Returns ``(after_cb, future)`` where ``after_cb`` is the sync callback to
+    pass to ``vc.start_recording()`` and ``future`` is an
+    :class:`asyncio.Future` that resolves once audio processing is complete.
+    The caller (typically ``/stop``) should await ``future`` before marking the
+    session as queued, so that audio files are registered in the DB before the
+    transcriber picks up the session.
     """
-    async def callback(sink: discord.sinks.WaveSink):
+    loop = asyncio.get_running_loop()
+    # Future shared between the sync callback and the async processing task.
+    # Set when audio processing finishes (or errors out).
+    done_future: asyncio.Future = loop.create_future()
+
+    async def _process_recording(exc: Exception | None):
         """Process recorded audio and save to disk."""
-        db = bot.db
+        try:
+            if exc is not None:
+                bot.logger.error(
+                    f"Session {session_id}: recording stopped with error: {exc}"
+                )
+                # Still try to save whatever audio was captured
+            db = bot.db
 
-        # Resolve guild for member lookup — needed to map user IDs
-        # to display names. The transcriber has no Discord API access,
-        # so the bot must store speaker identity in the DB now.
-        guild = bot.get_guild(guild_id) if hasattr(bot, "get_guild") else None
+            # Resolve guild for member lookup — needed to map user IDs
+            # to display names. The transcriber has no Discord API access,
+            # so the bot must store speaker identity in the DB now.
+            guild = bot.get_guild(int(guild_id)) if hasattr(bot, "get_guild") else None
 
-        # Ensure recording directory exists
-        rec_dir = f"/data/recordings/{session_id}"
-        os.makedirs(rec_dir, exist_ok=True)
+            # Ensure recording directory exists
+            rec_dir = f"/data/recordings/{session_id}"
+            os.makedirs(rec_dir, exist_ok=True)
 
-        audio_count = 0
-        for user_id, audio_data in sink.audio_data.items():
-            filepath = f"{rec_dir}/{user_id}.wav"
+            audio_count = 0
+            for user_id, audio_data in sink.audio_data.items():
+                filepath = f"{rec_dir}/{user_id}.wav"
 
-            # audio_data is a BytesIO object containing WAV data
-            with open(filepath, "wb") as f:
-                f.write(audio_data.getbuffer())
+                # audio_data is a BytesIO object containing WAV data
+                with open(filepath, "wb") as f:
+                    f.write(audio_data.getbuffer())
 
-            # Resolve speaker display name from guild member cache.
-            # user_id is an int (Discord user ID); fall back to str(id)
-            # if the member has left the guild or the cache is cold.
-            speaker_name = str(user_id)
-            if guild is not None:
-                member = guild.get_member(user_id)
-                if member is not None:
-                    speaker_name = member.display_name
+                # Resolve speaker display name from guild member cache.
+                # user_id is an int (Discord user ID); fall back to str(id)
+                # if the member has left the guild or the cache is cold.
+                speaker_name = str(user_id)
+                if guild is not None:
+                    member = guild.get_member(user_id)
+                    if member is not None:
+                        speaker_name = member.display_name
 
-            size = audio_data.getbuffer().nbytes
-            db.add_audio_file(
-                session_id=session_id,
-                filepath=filepath,
-                size_bytes=size,
-                discord_user_id=str(user_id),
-                speaker_name=speaker_name,
+                size = audio_data.getbuffer().nbytes
+                db.add_audio_file(
+                    session_id=session_id,
+                    filepath=filepath,
+                    size_bytes=size,
+                    discord_user_id=str(user_id),
+                    speaker_name=speaker_name,
+                )
+                audio_count += 1
+
+            bot.logger.info(
+                f"Session {session_id}: saved {audio_count} audio file(s) to {rec_dir}"
             )
-            audio_count += 1
+        except Exception as e:
+            bot.logger.error(f"Session {session_id}: recording callback failed: {e}")
+            raise
+        finally:
+            # Signal the future regardless of success/failure so /stop
+            # doesn't hang forever waiting.
+            if not done_future.done():
+                done_future.set_result(None)
 
-        bot.logger.info(
-            f"Session {session_id}: saved {audio_count} audio file(s) to {rec_dir}"
-        )
+    def after_cb(exc: Exception | None) -> None:
+        """Synchronous after-callback for py-cord.
 
-    return callback
+        Schedules async audio processing on the event loop. This may be
+        called from a non-loop thread, hence run_coroutine_threadsafe.
+        """
+        asyncio.run_coroutine_threadsafe(_process_recording(exc), loop)
+
+    return after_cb, done_future

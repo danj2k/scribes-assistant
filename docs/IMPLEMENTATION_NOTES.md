@@ -30,14 +30,18 @@ Both stages use the same YAML lexicon file (`/data/lexicon.yaml`). Terms added v
 
 SQLite supports WAL mode for concurrent reads. Both the bot and transcriber access the same database file. Enable WAL mode to allow the transcriber to read while the bot writes. Locking is handled at the application level (status field transitions).
 
-### Speaker Diarisation Approach
+### py-cord Recording After-Callback
 
-No dedicated diarisation library is used. Instead:
-- py-cord delivers audio per-user (each user's voice is a separate stream)
-- Initial speaker assignment is by Discord user join order
-- Voice fingerprinting (MFCCs or similar) refines assignment over time
-- Overlapping speakers are not separated — the last active speaker wins
-- This is acknowledged as an approximation; it works well enough for a small group
+py-cord 2.8.0's `start_recording(sink, callback)` stores `callback` as an `AudioReader.after` callback. When `stop_recording()` is called, py-cord invokes `after(exc)` **synchronously** from the voice client's thread — it receives the exception (or None), NOT the sink. The callback must be a regular (sync) callable, not a coroutine function.
+
+The bot uses `make_recording_after_callback()` to create a sync callback that:
+1. Captures the sink, session metadata, and event loop at creation time (in `start_command`)
+2. Schedules the async audio-processing coroutine via `asyncio.run_coroutine_threadsafe()` — safe from any thread
+3. Returns a `Future` that `stop_command` awaits with a 30-second timeout
+
+This ensures `/stop` does not call `end_session()` (which transitions to QUEUED) until all audio files have been written to disk and registered in the `audio_files` table. Without this, the transcriber could find zero files for a session and produce an empty transcript.
+
+If the callback raises an exception or the future times out, `stop_command` logs the error and proceeds with `end_session()` anyway — partial or no audio is better than a stuck session.
 
 ### Timestamp-Based Session IDs
 
@@ -54,13 +58,13 @@ sherpa-onnx model weights (~609MB for whisper-small; varies by model size) are s
 A standalone download script (`scripts/download_model.py`) handles the download with progress reporting. It can be run via `docker compose exec transcriber python scripts/download_model.py`. The script is idempotent — skips download if all required files already exist. The transcriber's main loop also calls `download_model()` as a fallback on startup.
 
 ### SHA-256 Model Verification
-Downloaded model archives are verified with SHA-256 before extraction. The expected hash is hardcoded as `EXPECTED_SHA256` in `transcriber/worker.py` and must be updated manually when the model version changes.
+Downloaded model archives are verified with SHA-256 before extraction. The expected hash is stored in `EXPECTED_SHA256` — a dict keyed by model size (e.g. `"small"`, `"base"`) in `transcriber/worker.py`. When a model size is not in the dict (no known hash), verification is skipped with a WARNING rather than failing. This allows new model sizes to be used without immediately knowing their hash.
 
-Verification flow: download, then hash check, then extract. On mismatch, the bad archive is deleted and a `RuntimeError` is raised. This prevents corrupted or tampered archives from being extracted into the model directory.
+Verification flow: download, then hash check (if available), then extract. On mismatch, the bad archive is deleted and a `RuntimeError` is raised. This prevents corrupted or tampered archives from being extracted into the model directory.
 
 The `_sha256_file()` helper reads in 8KB chunks to handle large files without excessive memory use. Progress reporting is deduplicated — logs only fire when the percentage or megabyte count changes, avoiding log spam on slow connections.
 
-To update the expected hash after a model upgrade, run `_sha256_file()` against the new archive and update `EXPECTED_SHA256` in `transcriber/worker.py`.
+To add a hash for a new model size, download the archive, run `_sha256_file()` against it, and add the entry to `EXPECTED_SHA256` in `transcriber/worker.py`.
 
 
 ### Transcript Delivery
