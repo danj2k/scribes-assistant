@@ -851,3 +851,57 @@ The heartbeat approach catches:
 - `tests/test_transcriber_worker.py::TestRunWorkerConfigPath` (3 tests): explicit config path, env var config path, default fallback
 
 **Impact:** 315/315 tests pass (0 warnings).
+
+## 2025-07-12 — Deployment Audit Fixes (#4, #6, #8, #10)
+
+Four remaining deployment-layer issues from the repository audit were fixed in a single batch.
+
+### Fix #4: Transcriber Dockerfile mkdir dead paths
+
+**Problem:** The transcriber Dockerfile created directories under `/app/data/` (`/app/data/recordings`, `/app/data/transcripts`, `/app/data/logs`). The Docker volume is mounted at `/data`, so these were dead paths — the mkdir commands created empty directories that were never used by the running container.
+
+**Fix:**
+- Changed the `RUN mkdir -p` commands in `transcriber/Dockerfile` from `/app/data/*` to `/data/*` — matching the actual volume mount point.
+
+### Fix #6: Transcriber health check not meaningful
+
+**Problem:** The transcriber's Docker health check was `python -c "import sys; sys.exit(0)"`, which only verified the Python interpreter was alive. A crashed or stuck transcriber would still pass the check.
+
+**Fix:**
+- Created `transcriber/healthcheck.py` — a standalone health check script that reads the heartbeat file (`/data/transcriber.heartbeat`) and checks its modification time. If the file is missing or older than 300 seconds (5 minutes), the check fails (exit 1). The 5-minute threshold gives headroom for a single long transcription (the transcriber doesn't update the heartbeat during transcription, only between poll cycles).
+- Added heartbeat writing to `transcriber/main.py`:
+  - Initial heartbeat written after model load, before the polling loop starts (confirms the model loaded successfully).
+  - Heartbeat updated after each poll cycle (at the end of the try/except block, before the loop repeats).
+- Updated `transcriber/Dockerfile` HEALTHCHECK to `CMD python /app/transcriber/healthcheck.py` with `start-period=120s` (allows model download/load time on first start).
+- Added explicit healthcheck to `docker-compose.yml` transcriber service (`test: ["CMD", "python", "/app/transcriber/healthcheck.py"]`, `start_period: 120s`).
+
+### Fix #8: Bot has no SIGTERM handler for graceful shutdown
+
+**Problem:** The bot had no SIGTERM handler. Docker sends SIGTERM on `docker stop`; without a handler, the bot would be killed by SIGKILL after the 10-second grace period, potentially mid-delivery or mid-gateway-event.
+
+**Fix:**
+- Added `import signal` to `bot/main.py`.
+- Added `stop()` method to `DeliveryLoop` in `bot/delivery.py` — cancels the delivery polling asyncio task and sets the running flag to False. Safe no-op if the loop was never started or the task is already done.
+- Added `setup_hook()` to `ScribesBot` — registers a SIGTERM handler within the running event loop using `loop.add_signal_handler()`. The handler calls `DeliveryLoop.stop()` and `bot.close()`.
+- Added `on_disconnect` callback for additional cleanup logging.
+
+The handler is registered in `setup_hook()` (not at module level) because it needs access to the running event loop and the bot instance. `setup_hook()` runs after the event loop starts but before `on_ready`.
+
+### Fix #10: No startup config validation
+
+**Problem:** The bot had no validation of its configuration before connecting to Discord. A misconfigured `config.yaml` (e.g. missing guild_id) would cause cryptic py-cord errors at runtime rather than a clear startup error.
+
+**Fix:**
+- Added `validate()` method to `Config` class in `shared/config.py` — checks:
+  1. Config file existence (verifies the file path exists and is readable)
+  2. `discord.guild_id` is non-zero (zero/missing would cause global slash command sync instead of guild-specific)
+  3. `discord.transcript_channel_id` is non-zero (zero/missing means nowhere to deliver transcripts)
+  Returns a list of error strings (empty = valid).
+- Called `validate()` from `bot/main.py` `main()` — after logging setup (so errors are logged) but before creating the bot instance. If errors are found, each is logged as ERROR and the process exits with `sys.exit(1)`.
+
+**Tests added (13 tests):**
+- `tests/test_config.py` (3 tests): Config.validate() — valid config, missing guild_id, missing transcript_channel_id
+- `tests/test_delivery.py` (4 tests): DeliveryLoop.stop() — cancels running task, no-op when not running, no-op when task already done, logs message
+- `tests/test_healthcheck.py` (4 tests): Transcriber healthcheck — fresh heartbeat, missing heartbeat, stale heartbeat, boundary case
+
+**Impact:** 328/328 tests pass (0 warnings).

@@ -38,6 +38,20 @@ class DeliveryLoop:
             return
         self._task = asyncio.create_task(self.run())
 
+    async def stop(self):
+        """Cancel the delivery loop task and wait for it to finish.
+
+        Called during graceful shutdown so a transcript delivery in
+        flight is not abandoned mid-send.
+        """
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self.logger.info("Delivery loop stopped")
+
     async def run(self):
         """Main polling loop — runs until the bot shuts down."""
         self.logger.info("Transcript delivery loop started")

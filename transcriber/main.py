@@ -174,6 +174,13 @@ def run_worker(config_path: str | None = None):
     # (Ctrl-C) is still caught via KeyboardInterrupt below.
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
+    # Write an initial heartbeat so the container reports healthy as
+    # soon as the model is loaded and the worker is ready to poll.
+    # Without this, the health check would see no heartbeat file and
+    # report unhealthy during the startup window.
+    _heartbeat_file = Path("/data/transcriber.heartbeat")
+    _heartbeat_file.write_text(str(time.time()))
+
     logger.info("Transcriber worker started, polling for queued files...")
 
     while not _shutdown_requested:
@@ -264,6 +271,11 @@ def run_worker(config_path: str | None = None):
         except Exception as e:
             logger.error(f"Worker loop error: {e}")
             time.sleep(config.poll_interval)
+
+        # Update heartbeat after each poll cycle so the health check
+        # knows the worker is alive.  Placed here (outside the inner
+        # try/except) so it fires whether or not a file was processed.
+        _heartbeat_file.write_text(str(time.time()))
 
     if _shutdown_requested:
         logger.info("Graceful shutdown complete (SIGTERM)")

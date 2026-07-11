@@ -58,6 +58,37 @@ def _make_delivery_loop():
     return loop, bot, db, logger
 
 
+class _FakeTask:
+    """Minimal awaitable fake for asyncio.Task — supports cancel/done/await.
+
+    The delivery loop's stop() method does:
+
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    This fake simulates a task that is active, gets cancelled, and
+    raises CancelledError when awaited (as a real cancelled task would).
+    """
+
+    def __init__(self, done=False):
+        self._done = done
+        self.cancel_called = False
+
+    def done(self):
+        return self._done
+
+    def cancel(self):
+        self.cancel_called = True
+
+    def __await__(self):
+        raise asyncio.CancelledError()
+        yield  # never reached, but makes this a generator
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -115,6 +146,45 @@ class TestDeliveryLoopStart:
         loop.start()
         # Task should not be replaced
         assert loop._task is mock_task
+
+
+class TestDeliveryLoopStop:
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_running_task(self):
+        """stop() cancels an active task and awaits it."""
+        loop, bot, db, logger = _make_delivery_loop()
+
+        task = _FakeTask()
+        loop._task = task
+        await loop.stop()
+
+        assert task.cancel_called
+
+    @pytest.mark.asyncio
+    async def test_stop_no_op_when_no_task(self):
+        """stop() is safe to call when no task was ever started."""
+        loop, *_ = _make_delivery_loop()
+        loop._task = None
+        await loop.stop()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_stop_no_op_when_task_done(self):
+        """stop() is safe to call when the task has already completed."""
+        loop, *_ = _make_delivery_loop()
+        task = _FakeTask(done=True)
+        loop._task = task
+        await loop.stop()
+        assert not task.cancel_called
+
+    @pytest.mark.asyncio
+    async def test_stop_logs_message(self):
+        """stop() logs that the delivery loop has stopped."""
+        loop, bot, db, logger = _make_delivery_loop()
+
+        loop._task = _FakeTask()
+        await loop.stop()
+        logger.info.assert_called_once_with("Delivery loop stopped")
 
 
 class TestDeliveryLoopPoll:

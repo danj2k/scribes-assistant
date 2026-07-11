@@ -37,6 +37,12 @@ services:
       - ./config.yaml:/data/config.yaml:ro
     environment:
       - CONFIG_PATH=/data/config.yaml
+    healthcheck:
+      test: ["CMD", "python", "/app/transcriber/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     networks:
       - scribes-net
     deploy:

@@ -216,3 +216,34 @@ class Config:
     @property
     def database_path(self) -> str:
         return self.get("database.path", "/data/queue.db")
+
+    # -- Validation -----------------------------------------------------------
+
+    def validate(self, path: str | None = None) -> list[str]:
+        """Check that critical configuration is present and sensible.
+
+        Returns a list of error messages (empty if all checks pass).
+        The *path* argument is the config file path used for error
+        messages — if None, no file path is mentioned.
+
+        This does NOT replace defaults — callers who want strict
+        validation should call this explicitly after constructing a
+        Config.  The bot calls it in main() and refuses to start if
+        any errors are returned, preventing a silent restart loop
+        where the bot runs with empty defaults forever.
+        """
+        errors: list[str] = []
+
+        loc = f" ({path})" if path else ""
+        if self.guild_id == 0:
+            errors.append(
+                f"discord.guild_id is not set{loc}. "
+                f"The bot needs to know which Discord server to operate in."
+            )
+        if self.transcript_channel_id == 0:
+            errors.append(
+                f"discord.transcript_channel_id is not set{loc}. "
+                f"The bot needs a channel to post transcripts to."
+            )
+
+        return errors

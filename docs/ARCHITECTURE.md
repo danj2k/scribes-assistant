@@ -33,6 +33,10 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 
 **Dockerfile:** `bot/Dockerfile` — Python 3.11 slim base, minimal dependencies. The config file is bind-mounted at runtime (not baked into the image) so the same image works across environments.
 
+**Graceful shutdown:** The bot registers a SIGTERM handler in `setup_hook()` (which runs after the event loop starts, before `on_ready`). When Docker sends SIGTERM on `docker stop`, the handler calls `DeliveryLoop.stop()` (cancels the delivery polling task) and `bot.close()` (closes the Discord gateway cleanly). An `on_disconnect` callback provides additional cleanup. This allows the bot to finish any in-progress delivery, close the Discord gateway cleanly, and avoid Docker's SIGKILL grace period killing it mid-operation.
+
+**Startup validation:** On startup, `main()` validates the configuration before connecting to Discord. `Config.validate()` checks that the config file exists, `discord.guild_id` is non-zero, and `discord.transcript_channel_id` is non-zero. If validation fails, the bot logs clear error messages and exits with status 1 — preventing a silent startup with an invalid config (e.g. missing guild ID would cause slash commands to sync globally instead of to the intended guild).
+
 ### Transcriber (scribes-transcriber)
 
 **Responsibilities:**
@@ -56,6 +60,8 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 **Dockerfile:** `transcriber/Dockerfile` — Python 3.11 base with sherpa-onnx and ffmpeg. The config file is bind-mounted at runtime (not baked into the image).
 
 **Graceful shutdown:** The transcriber registers a SIGTERM handler (Docker sends SIGTERM on `docker stop`). The handler sets a module-level flag that the main loop checks between operations; the loop exits cleanly after the current transcription finishes, then closes the database. This avoids SIGKILL after the Docker grace period, which would lose in-progress work. SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt`.
+
+**Heartbeat:** The transcriber writes a heartbeat file (`/data/transcriber.heartbeat`) after model load (initial heartbeat) and after each poll cycle, confirming the process is alive and actively working. The Docker health check (`transcriber/healthcheck.py`) reads this file's modification time and declares unhealthy if older than 5 minutes — enough headroom for a long transcription, but short enough to catch a stuck process.
 
 ### Shared Volume
 
@@ -170,7 +176,7 @@ A duplicate-handler guard prevents double-attachment if the function is called m
 ### Health Checks
 
 - **Bot health check** — `bot/healthcheck.py` verifies that the bot's event loop is alive and the Discord gateway is connected. The bot writes a heartbeat file (`/data/bot.heartbeat`) on `on_ready` (which only fires after the gateway handshake completes) and updates it every 30 seconds via a background task. The health check reads the file's modification time and declares unhealthy if it is older than 90 seconds (3 missed cycles). This catches a dead event loop, a crashed bot process, or a lost gateway connection — all of which stop updating the heartbeat. The trivial import-only check (`python -c "import discord; print('ok')"`) was replaced with this meaningful check because a crashed bot with a dead event loop would still pass the import test.
-- **Transcriber health check** — not yet implemented (see deployment findings #4 in DEVELOPMENT_LOG.md).
+- **Transcriber health check** — `transcriber/healthcheck.py` verifies that the transcriber process is alive and actively polling. The transcriber writes a heartbeat file (`/data/transcriber.heartbeat`) after model load (initial heartbeat, confirming the model loaded successfully) and updates it after each poll cycle. The health check reads the file's modification time and declares unhealthy if it is older than 5 minutes (300 seconds). This threshold gives headroom for a single long transcription (which can take several minutes) while still catching a genuinely stuck or crashed process. The `start_period` is set to 120 seconds in both the Dockerfile and docker-compose.yml to allow the model to load on first start without being marked unhealthy. The trivial `python -c "import sys; sys.exit(0)"` check was replaced with this meaningful check because a crashed transcriber would still pass the import test.
 
 ## Dependencies
 

@@ -214,3 +214,74 @@ class TestHeartbeatWriting:
 
             # Should NOT have created a new task
             mock_create.assert_not_called()
+
+
+class TestTranscriberHealthcheck:
+    """Test transcriber/healthcheck.py — the Docker health check for
+    the transcriber container.
+
+    The transcriber writes /data/transcriber.heartbeat after each poll
+    cycle.  The health check verifies the file exists and is fresh.
+    """
+
+    def _run_transcriber_healthcheck(self, monkeypatch, capsys,
+                                     heartbeat_exists=True,
+                                     heartbeat_mtime=None,
+                                     unique_id=None):
+        """Run transcriber/healthcheck.py in-process and return exit code."""
+        import transcriber.healthcheck as thc
+
+        suffix = f"_{unique_id}" if unique_id else ""
+        tmp_path = Path(f"/tmp/test_transcriber_hc{suffix}")
+        tmp_path.unlink(missing_ok=True)
+
+        monkeypatch.setattr(thc, "HEARTBEAT_FILE", tmp_path)
+
+        if heartbeat_exists:
+            tmp_path.write_text(str(time.time()))
+            if heartbeat_mtime is not None:
+                import os
+                os.utime(tmp_path, (heartbeat_mtime, heartbeat_mtime))
+
+        exit_code = 0
+        try:
+            thc.main()
+        except SystemExit as e:
+            exit_code = e.code
+
+        captured = capsys.readouterr()
+        tmp_path.unlink(missing_ok=True)
+        return exit_code, captured.out, captured.err
+
+    def test_fresh_heartbeat_is_healthy(self, monkeypatch, capsys):
+        """Heartbeat file updated recently → exit 0."""
+        exit_code, out, err = self._run_transcriber_healthcheck(
+            monkeypatch, capsys, unique_id="fresh"
+        )
+        assert exit_code == 0
+        assert "healthy" in out
+
+    def test_missing_heartbeat_is_unhealthy(self, monkeypatch, capsys):
+        """No heartbeat file → exit 1."""
+        exit_code, out, err = self._run_transcriber_healthcheck(
+            monkeypatch, capsys, heartbeat_exists=False, unique_id="missing"
+        )
+        assert exit_code == 1
+        assert "not found" in err
+
+    def test_stale_heartbeat_is_unhealthy(self, monkeypatch, capsys):
+        """Heartbeat older than 5 minutes → exit 1."""
+        old_time = time.time() - 400  # 400s ago, threshold is 300s
+        exit_code, out, err = self._run_transcriber_healthcheck(
+            monkeypatch, capsys, heartbeat_mtime=old_time, unique_id="stale"
+        )
+        assert exit_code == 1
+        assert "unhealthy" in err.lower()
+
+    def test_just_under_threshold_is_healthy(self, monkeypatch, capsys):
+        """Heartbeat just under the 5-minute threshold → exit 0."""
+        recent_time = time.time() - 250  # 250s ago, under 300s threshold
+        exit_code, out, err = self._run_transcriber_healthcheck(
+            monkeypatch, capsys, heartbeat_mtime=recent_time, unique_id="boundary"
+        )
+        assert exit_code == 0

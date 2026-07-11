@@ -100,6 +100,48 @@ The bot's Docker health check verifies the event loop is alive and the Discord g
 
 This catches three failure modes that a trivial `import discord` check would miss: a dead event loop (stops updating), a crashed process (no process to write), and a lost gateway connection (on_ready never fires, no initial heartbeat). The 90-second threshold gives 3x tolerance over the 30-second update interval, avoiding false positives during momentary event loop congestion.
 
+### Transcriber Health Check (Heartbeat)
+
+The transcriber's Docker health check follows the same heartbeat pattern as the bot. The transcriber writes a heartbeat file (`/data/transcriber.heartbeat`) at two points:
+
+1. **After model load** — an initial heartbeat written before the polling loop starts, confirming the model loaded successfully and the process is ready to work.
+2. **After each poll cycle** — updated at the end of each iteration of the main loop (after the try/except block, before the loop repeats), confirming the process is actively polling.
+
+`transcriber/healthcheck.py` reads the file's modification time and declares unhealthy if older than 300 seconds (5 minutes). This threshold is larger than the bot's (90s) because a single transcription can take several minutes for long recordings — the transcriber doesn't update the heartbeat during transcription, only between poll cycles. 5 minutes gives enough headroom for a long file while still catching a genuinely stuck or crashed process.
+
+The `start_period` is set to 120 seconds in both the Dockerfile (`HEALTHCHECK ... start-period=120s`) and docker-compose.yml (`start_period: 120s`). This is necessary because the transcriber must download and load the Whisper model on first start, which can take over a minute. Without this grace period, the health check would declare the container unhealthy before the model finished loading.
+
+The trivial `python -c "import sys; sys.exit(0)"` check was replaced with this meaningful check because a crashed transcriber process would still pass the import test.
+
+### Transcriber Dockerfile mkdir Paths
+
+The transcriber Dockerfile previously created directories under `/app/data/` (`/app/data/recordings`, `/app/data/transcripts`, `/app/data/logs`). However, the Docker volume is mounted at `/data` (not `/app/data`), so these directories were dead paths — the transcriber wrote to `/data/recordings/`, `/data/transcripts/`, etc. via the volume mount, and the mkdir commands created empty directories that were never used. Fixed by changing the mkdir commands to target `/data/recordings`, `/data/transcripts`, `/data/logs` — matching the actual volume mount point.
+
+### Bot Graceful Shutdown (SIGTERM)
+
+Docker sends SIGTERM to a container's PID 1 on `docker stop`. Without a handler, the bot process would be killed by SIGKILL after the 10-second grace period, potentially mid-delivery or mid-gateway-event.
+
+The bot registers a SIGTERM handler in `setup_hook()` — a py-cord hook that runs after the event loop starts but before `on_ready`. The handler:
+
+1. Calls `DeliveryLoop.stop()` — cancels the delivery polling asyncio task and sets the running flag to False, preventing further poll cycles.
+2. Calls `bot.close()` — closes the Discord gateway connection cleanly (sends a proper WebSocket close frame).
+
+An `on_disconnect` callback provides additional cleanup logging.
+
+`DeliveryLoop.stop()` is a safe no-op if the loop was never started (the task is None) or has already completed (the task's `done()` returns True). It sets the `_running` flag to False and cancels the task with `task.cancel()`, then awaits it with `asyncio.wait_for(task, timeout=5.0)` to allow the current poll cycle to finish (up to 5 seconds) before forcing cancellation.
+
+The handler is registered in `setup_hook()` rather than at module level because the signal handler needs access to the running event loop and the bot instance. `setup_hook()` runs within the already-started event loop, so `loop.add_signal_handler()` can be called safely.
+
+### Config Validation
+
+`Config.validate()` performs startup checks before the bot connects to Discord. It returns a list of error strings (empty list means valid):
+
+1. **Config file existence** — verifies the config file path exists and is readable.
+2. **`discord.guild_id` non-zero** — a zero/missing guild ID would cause py-cord to sync slash commands globally instead of to the intended guild, which is almost certainly a misconfiguration.
+3. **`discord.transcript_channel_id` non-zero** — a zero/missing channel ID means the bot has nowhere to deliver transcripts.
+
+`main()` calls `validate()` after setting up logging (so errors are logged) but before creating the bot instance. If errors are found, each is logged as an ERROR and the process exits with status 1. This provides clear, actionable error messages instead of a cryptic py-cord traceback when the bot tries to sync commands to a non-existent guild.
+
 ### Model Weight Persistence
 
 sherpa-onnx model weights (~609MB for whisper-small; varies by model size) are stored in a Docker volume mounted at `/data/models/whisper-{model_size}/`. The model size is set via the `transcriber.model` config key (default: `small`). This volume persists across container rebuilds — only downloaded once on first run.
@@ -238,12 +280,13 @@ The test suite is curated to test what IS there, not what ISN'T. Tests that asse
 
 **Coverage:**
 
-- `bot/delivery.py` (DeliveryLoop) — covered by `tests/test_delivery.py` (14 tests): constructor, start/idempotency, poll behaviour (complete sessions, no transcript path, already-delivered, empty list), delivery (thread creation, long transcript splitting, followup message), and run loop (poll-then-sleep, shutdown event, exception handling).
+- `bot/delivery.py` (DeliveryLoop) — covered by `tests/test_delivery.py` (17 tests): constructor, start/idempotency, poll behaviour (complete sessions, no transcript path, already-delivered, empty list), delivery (thread creation, long transcript splitting, followup message), run loop (poll-then-sleep, shutdown event, exception handling), and stop() (cancels running task, no-op when not running, no-op when task already done, logs message).
 - `bot/voice.py` (idle timeout) — covered by `tests/test_voice.py` (9 tests): on_voice_state_update (bot members ignored, no voice client ignored, starts timer when alone, cancels on user join) and _idle_timeout (timeout ends session and disconnects, no active session just disconnects, cancellation is silent, task cleanup, not-recording state doesn't stop the bot).
 - `shared/lexicon.py` — covered by `tests/test_lexicon.py` and `tests/test_lexicon_integration.py` (positive tests only: correction pipeline, tie-breaking, case preservation, tokenisation, hotwords format).
 - `shared/database.py` — covered by `tests/test_database.py` (session lifecycle, file registration, segment storage, fail_session, queued sessions without files, single-session enforcement).
-- `shared/config.py` — covered by `tests/test_config.py` (defaults, deep copy isolation, logging config, bot token validation).
+- `shared/config.py` — covered by `tests/test_config.py` (defaults, deep copy isolation, logging config, bot token validation, config validation).
 - `transcriber/worker.py` — covered by `tests/test_transcriber_worker.py` (model loading, model size filenames, download, segment building, transcription result).
+- `bot/healthcheck.py` and `transcriber/healthcheck.py` — covered by `tests/test_healthcheck.py` (12 tests): bot healthcheck (fresh/missing/stale/boundary, heartbeat writing, heartbeat loop, on_ready integration, task not restarted) and transcriber healthcheck (fresh/missing/stale/boundary).
 - `transcriber/main.py` — covered by `tests/test_sigterm_handling.py` (SIGTERM flag handling).
 - `bot/commands.py` — covered by `tests/test_commands.py` (permissions), `tests/test_recording_callback.py` (after-callback factory), `tests/test_start_command_defer.py` (interaction deferral).
 - `shared/tar_utils.py` — covered by `tests/test_tar_utils.py` (path traversal protection).

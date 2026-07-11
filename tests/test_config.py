@@ -211,3 +211,60 @@ class TestLoggingConfig:
         assert c.log_max_size_mb == 5
         assert c.log_backup_count == 2
 
+
+class TestConfigValidate:
+    """Tests for Config.validate() — startup validation."""
+
+    def test_valid_config_returns_no_errors(self, tmp_path):
+        """A config with guild_id and transcript_channel_id set passes validation."""
+        _write_yaml(tmp_path / "cfg.yaml", {
+            "discord": {
+                "guild_id": "123456789",
+                "transcript_channel_id": "987654321",
+            },
+        })
+        c = Config(str(tmp_path / "cfg.yaml"))
+        errors = c.validate()
+        assert errors == []
+
+    def test_missing_guild_id_returns_error(self, tmp_path):
+        """Missing guild_id is reported as an error."""
+        _write_yaml(tmp_path / "cfg.yaml", {
+            "discord": {
+                "transcript_channel_id": "987654321",
+            },
+        })
+        c = Config(str(tmp_path / "cfg.yaml"))
+        errors = c.validate()
+        assert len(errors) == 1
+        assert "guild_id" in errors[0]
+
+    def test_missing_transcript_channel_id_returns_error(self, tmp_path):
+        """Missing transcript_channel_id is reported as an error."""
+        _write_yaml(tmp_path / "cfg.yaml", {
+            "discord": {
+                "guild_id": "123456789",
+            },
+        })
+        c = Config(str(tmp_path / "cfg.yaml"))
+        errors = c.validate()
+        assert len(errors) == 1
+        assert "transcript_channel_id" in errors[0]
+
+    def test_empty_config_returns_both_errors(self, tmp_path):
+        """An empty config (all defaults) returns both errors."""
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        errors = c.validate()
+        assert len(errors) == 2
+        assert "guild_id" in errors[0]
+        assert "transcript_channel_id" in errors[1]
+
+    def test_validate_includes_path_in_error(self, tmp_path):
+        """Error messages include the config file path when provided."""
+        cfg_path = str(tmp_path / "cfg.yaml")
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(cfg_path)
+        errors = c.validate(cfg_path)
+        assert any(cfg_path in err for err in errors)
+

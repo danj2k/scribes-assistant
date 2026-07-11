@@ -6,6 +6,7 @@ and transcription pipeline coordination.
 import os
 import sys
 import time
+import signal
 import logging
 import asyncio
 from pathlib import Path
@@ -91,13 +92,78 @@ class ScribesBot(commands.Bot):
         """Delegate voice state changes to the voice module."""
         await on_voice_state_update(self, member, before, after)
 
+    async def setup_hook(self):
+        """Register the SIGTERM handler for graceful shutdown.
+
+        Called by py-cord after the event loop starts but before
+        on_ready.  Registering here (rather than at module level)
+        ensures the handler runs on the correct event loop.
+
+        Docker sends SIGTERM on `docker stop`.  Without this handler,
+        the process is SIGKILLed after the grace period with no
+        cleanup — the delivery loop may be mid-send, the database
+        may not be closed, and the heartbeat file goes stale.
+
+        We use loop.add_signal_handler (not signal.signal) because
+        signal.signal's handler runs in a thread context and cannot
+        safely schedule coroutines on the event loop.
+        """
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGTERM, self._request_shutdown)
+
+    def _request_shutdown(self):
+        """SIGTERM handler — trigger graceful shutdown.
+
+        Stops the delivery loop, then closes the Discord gateway.
+        py-cord's close() cancels pending tasks and disconnects
+        cleanly, which is what we want.
+        """
+        logger.info("SIGTERM received — shutting down gracefully")
+
+        async def _shutdown():
+            # Stop the delivery loop first so a transcript delivery
+            # in flight is not abandoned mid-send.
+            if self.delivery_loop and self.delivery_loop.is_running:
+                await self.delivery_loop.stop()
+            await self.close()
+
+        asyncio.ensure_future(_shutdown())
+
 
 def main():
     """Entry point — load config, set up bot, start event loop."""
     config_path = os.environ.get("CONFIG_PATH", "/data/config.yaml")
+
+    # Check that the config file exists before loading.  Without this,
+    # Config() silently falls back to all-defaults and the bot starts
+    # with no guild_id or transcript_channel_id, sitting forever doing
+    # nothing useful while Docker's restart policy keeps relaunching it.
+    if not Path(config_path).exists():
+        # Logging isn't configured yet — print to stderr as a fallback.
+        print(
+            f"Config file not found: {config_path}. "
+            f"Ensure config.yaml is mounted (see docker-compose.yml) "
+            f"and CONFIG_PATH is set correctly.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     config = Config(config_path)
 
+    # Set up logging early so validation errors are captured properly.
     setup_logging_from_config(config, "bot")
+
+    # Validate critical config — refuse to start if required values
+    # are missing, rather than running silently with defaults.
+    errors = config.validate(config_path)
+    if errors:
+        for err in errors:
+            logger.error(err)
+        logger.error(
+            "Bot will not start due to configuration errors. "
+            "Fix config.yaml and restart."
+        )
+        sys.exit(1)
 
     # Initialise shared components
     db = Database(config.database_path)
