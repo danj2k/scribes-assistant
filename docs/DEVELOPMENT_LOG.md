@@ -714,3 +714,21 @@ The `setup_logging_from_config(config, name)` wrapper reads `config.log_level`, 
 - `docs/IMPLEMENTATION_NOTES.md` — updated Logging Configuration section with shared module details, stdout unification, and corrected format examples
 
 **Impact:** 265/265 tests pass (9 net new: 4 old logging tests replaced by 13 new). Both containers now produce identically-formatted log output to stdout and rotating files. Library log records (py-cord, sherpa-onnx) are captured via the root logger. No more duplicate-handler risk on re-import.
+
+---
+
+## Bug #23 — Redundant logging config sections
+
+**Date:** 2026-07-11
+
+**Problem:** The `_DEFAULTS` dict in `shared/config.py` had both a `bot` section with `log_level` / `log_max_size_mb` / `log_backup_count` keys AND a `logging` section with `level` / `max_size_mb` / `backup_count` — the same settings duplicated under two different key paths. The `Config` properties used a fallback chain: `self.get("logging.level", self.get("bot.log_level", "INFO"))`, meaning users could configure logging via either path, with `bot.*` silently shadowed by `logging.*`. This was confusing: logging is a shared concern (both containers read the same config), so having a bot-specific copy was unnecessary and error-prone.
+
+**Fix:** Removed `log_level`, `log_max_size_mb`, and `log_backup_count` from the `bot` section of `_DEFAULTS`. The `Config` properties (`log_level`, `log_max_size_mb`, `log_backup_count`) now read exclusively from the `logging` section with sensible defaults — no fallback to `bot.*` keys. The `bot` section in `_DEFAULTS` now contains only `token_file`.
+
+**Files changed:**
+- `shared/config.py` — removed `log_level` / `log_max_size_mb` / `log_backup_count` from `_DEFAULTS["bot"]`; simplified the three Config properties to read only `logging.*`
+- `tests/test_config.py` — added `TestLoggingConfig` class (9 tests): defaults, reading from `logging.*` section, `bot.log_*` keys are ignored, `logging.*` overrides `bot.*`, `_DEFAULTS["bot"]` only has `token_file`
+- `docs/ARCHITECTURE.md` — updated Configuration section to note logging is configured via shared `logging` section only
+- `docs/IMPLEMENTATION_NOTES.md` — added paragraph to Logging Configuration section explaining the removal of `bot.*` logging keys
+
+**Impact:** 274/274 tests pass (9 new). The `config.yaml.example` already only used `logging.*` keys, so no example config changes were needed. Existing deployments with `bot.log_*` keys in their `config.yaml` will silently fall through to defaults (same behaviour as if the key was absent) — no error, just ignored.

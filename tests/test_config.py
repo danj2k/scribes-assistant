@@ -122,3 +122,100 @@ class TestBotToken:
         c = Config(str(tmp_path / "cfg.yaml"))
         with pytest.raises(ValueError, match="Bot token file is empty"):
             c.bot_token
+
+
+class TestLoggingConfig:
+    """Tests for logging configuration — Bug #23 regression tests.
+
+    Previously both ``bot.log_level`` / ``bot.log_max_size_mb`` /
+    ``bot.log_backup_count`` AND ``logging.level`` / ``logging.max_size_mb`` /
+    ``logging.backup_count`` existed in _DEFAULTS, with the Config properties
+    falling back from ``logging.*`` to ``bot.*``.  The ``bot.*`` keys have been
+    removed — logging is now configured solely through the shared ``logging``
+    section.
+    """
+
+    def test_log_level_default(self, tmp_path):
+        """log_level defaults to INFO when no logging config is present."""
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_level == "INFO"
+
+    def test_log_max_size_mb_default(self, tmp_path):
+        """log_max_size_mb defaults to 10 when no logging config is present."""
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_max_size_mb == 10
+
+    def test_log_backup_count_default(self, tmp_path):
+        """log_backup_count defaults to 5 when no logging config is present."""
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_backup_count == 5
+
+    def test_log_level_from_logging_section(self, tmp_path):
+        """log_level reads from logging.level."""
+        _write_yaml(tmp_path / "cfg.yaml", {"logging": {"level": "DEBUG"}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_level == "DEBUG"
+
+    def test_log_max_size_mb_from_logging_section(self, tmp_path):
+        """log_max_size_mb reads from logging.max_size_mb."""
+        _write_yaml(tmp_path / "cfg.yaml", {"logging": {"max_size_mb": 25}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_max_size_mb == 25
+
+    def test_log_backup_count_from_logging_section(self, tmp_path):
+        """log_backup_count reads from logging.backup_count."""
+        _write_yaml(tmp_path / "cfg.yaml", {"logging": {"backup_count": 3}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_backup_count == 3
+
+    def test_bot_log_keys_are_ignored(self, tmp_path):
+        """bot.log_* keys must NOT be read — only the shared logging section.
+
+        Regression test for Bug #23: the old fallback chain
+        ``self.get("logging.level", self.get("bot.log_level", ...))`` meant
+        users could accidentally configure logging via ``bot.log_level``.
+        Now that logging is a shared concern, only ``logging.*`` is read.
+        """
+        _write_yaml(tmp_path / "cfg.yaml", {
+            "bot": {
+                "log_level": "ERROR",
+                "log_max_size_mb": 99,
+                "log_backup_count": 99,
+            },
+        })
+        c = Config(str(tmp_path / "cfg.yaml"))
+        # Must fall through to defaults, NOT read the bot.* keys
+        assert c.log_level == "INFO"
+        assert c.log_max_size_mb == 10
+        assert c.log_backup_count == 5
+
+    def test_logging_section_overrides_bot_section(self, tmp_path):
+        """When both sections are present, logging.* wins and bot.* is ignored."""
+        _write_yaml(tmp_path / "cfg.yaml", {
+            "bot": {
+                "log_level": "ERROR",
+                "log_max_size_mb": 99,
+                "log_backup_count": 99,
+            },
+            "logging": {
+                "level": "WARNING",
+                "max_size_mb": 5,
+                "backup_count": 2,
+            },
+        })
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.log_level == "WARNING"
+        assert c.log_max_size_mb == 5
+        assert c.log_backup_count == 2
+
+    def test_bot_section_only_has_token_file(self, tmp_path):
+        """_DEFAULTS['bot'] must not contain log_* keys after Bug #23 cleanup."""
+        import shared.config as cfg_mod
+        bot_defaults = cfg_mod._DEFAULTS["bot"]
+        assert "token_file" in bot_defaults
+        assert "log_level" not in bot_defaults
+        assert "log_max_size_mb" not in bot_defaults
+        assert "log_backup_count" not in bot_defaults

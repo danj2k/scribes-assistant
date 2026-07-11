@@ -20,9 +20,6 @@ _DEFAULTS = {
     },
     "bot": {
         "token_file": "/run/secrets/bot_token",
-        "log_level": "INFO",
-        "log_max_size_mb": 10,
-        "log_backup_count": 5,
     },
     "lexicon": {
         "enabled": True,
@@ -204,15 +201,15 @@ class Config:
 
     @property
     def log_level(self) -> str:
-        return self.get("logging.level", self.get("bot.log_level", "INFO"))
+        return self.get("logging.level", "INFO")
 
     @property
     def log_max_size_mb(self) -> int:
-        return int(self.get("logging.max_size_mb", self.get("bot.log_max_size_mb", 10)))
+        return int(self.get("logging.max_size_mb", 10))
 
     @property
     def log_backup_count(self) -> int:
-        return int(self.get("logging.backup_count", self.get("bot.log_backup_count", 5)))
+        return int(self.get("logging.backup_count", 5))
 
     # -- Database properties --------------------------------------------------
 

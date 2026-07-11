@@ -151,6 +151,8 @@ Both handlers use a single consistent format with `datefmt`:
 
 The shared `/data/logs/` directory is mounted in both Dockerfiles so either container can access the logs for debugging.
 
+Logging is configured through a single shared `logging` section in `config.yaml` (`level`, `max_size_mb`, `backup_count`). The `Config` properties (`log_level`, `log_max_size_mb`, `log_backup_count`) read only from `logging.*` — there are no bot-specific or transcriber-specific logging keys. Previously, `bot.log_level` / `bot.log_max_size_mb` / `bot.log_backup_count` existed in `_DEFAULTS` as duplicates of the `logging` section, and the Config properties fell back from `logging.*` to `bot.*`. These were removed because logging is a shared concern: both containers read the same keys, so having a bot-specific copy was confusing and error-prone.
+
 ### Slash Command Error Handling
 
 Discord slash commands have built-in parameter validation — mistyped command names or parameter names are rejected by Discord's client before they reach the bot. The bot only needs to handle semantic errors:
