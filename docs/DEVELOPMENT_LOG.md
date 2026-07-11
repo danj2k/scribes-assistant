@@ -682,3 +682,35 @@ The `_match_case()` call is applied at both correction stages (exact match and f
 - `docs/IMPLEMENTATION_NOTES.md` — added "Numpy Array Passthrough to sherpa-onnx" section
 
 **Impact:** 256/256 tests pass (3 new). Eliminates ~690 MB of unnecessary memory allocation and seconds of CPU-bound list conversion for a typical 30-minute session.
+
+---
+
+## Bug #20: Inconsistent `setup_logging` between bot and transcriber
+
+**Date:** 2026-07-11
+
+**Problem:** Three divergent `setup_logging` implementations existed — one in `bot/main.py`, one in `transcriber/main.py`, and a third in `shared/logging_setup.py` that was never wired into either entry point. The divergences:
+
+- **Stream:** Bot used `StreamHandler()` (defaults to stderr); transcriber used `StreamHandler(sys.stdout)`. This meant `docker compose logs` captured transcriber output but missed bot logs.
+- **Format:** Bot had no `datefmt` (timestamps showed as raw `asctime`); transcriber had `datefmt="%Y-%m-%d %H:%M:%S"`. The format strings also differed (bot had brackets around `[%(name)s]`, transcriber did not).
+- **Duplicate guard:** Transcriber had `if root_logger.handlers: return`; bot had none — re-imports could attach duplicate handlers.
+- **Logger scope:** The shared module configured a named logger (not root), so library log records (py-cord, sherpa-onnx, etc.) were never captured.
+
+**Fix:** Rewrote `shared/logging_setup.py` as the single source of truth. `setup_logging(name, level, log_dir, max_size_mb, backup_count)` configures the **root** logger with:
+
+1. A `StreamHandler` writing to **stdout** (Docker convention — all container logs to stdout).
+2. A `RotatingFileHandler` writing to `<log_dir>/<name>.log` (10MB rotation, 5 backups).
+3. A single format: `%(asctime)s [%(name)s] %(levelname)s: %(message)s` with `datefmt="%Y-%m-%d %H:%M:%S"`.
+4. A duplicate-handler guard: if the root logger already has handlers, the function returns immediately without modifying the configuration.
+
+The `setup_logging_from_config(config, name)` wrapper reads `config.log_level`, `config.log_max_size_mb`, and `config.log_backup_count` and delegates to `setup_logging()`. Both `bot/main.py` and `transcriber/main.py` now import and call `setup_logging_from_config(config, "bot")` / `setup_logging_from_config(config, "transcriber")` respectively. The local `setup_logging` functions were removed from both entry points.
+
+**Files changed:**
+- `shared/logging_setup.py` — rewritten (119 lines): root logger, stdout handler, consistent format with `datefmt`, duplicate guard, `setup_logging_from_config()` wrapper
+- `bot/main.py` — removed local `setup_logging`, added import of `setup_logging_from_config`, updated call site
+- `transcriber/main.py` — removed local `setup_logging`, removed unused `logging.handlers` import, added import of `setup_logging_from_config`, updated call site
+- `tests/test_logging_setup.py` — rewritten (13 tests): root logger return, file handler creation, level respect, log dir creation, handler types, stdout stream, duplicate guard, datefmt, format consistency across handlers, log file naming, invalid level fallback, `setup_logging_from_config` wrapper, bot-vs-transcriber format consistency
+- `docs/ARCHITECTURE.md` — updated Logging section to describe shared module, handler structure, format, and duplicate guard
+- `docs/IMPLEMENTATION_NOTES.md` — updated Logging Configuration section with shared module details, stdout unification, and corrected format examples
+
+**Impact:** 265/265 tests pass (9 net new: 4 old logging tests replaced by 13 new). Both containers now produce identically-formatted log output to stdout and rotating files. Library log records (py-cord, sherpa-onnx) are captured via the root logger. No more duplicate-handler risk on re-import.

@@ -136,14 +136,17 @@ The `_deep_merge()` helper uses a shallow `.copy()` internally, which is safe be
 
 ### Logging Configuration
 
-Both containers use Python's standard `logging` module with two handlers:
-- **Console handler** — writes to stdout/stderr (visible via `docker compose logs`)
-- **File handler** — `RotatingFileHandler` writing to `/data/logs/<container>.log`, max 10MB per file, 5 archived backups
+Both containers share a single logging setup module (`shared/logging_setup.py`). The `setup_logging_from_config(config, name)` function configures the **root** logger with two handlers:
 
-Log format includes timestamp, container name, log level, and message. Example:
+- **Console handler** — `StreamHandler` writing to **stdout** (visible via `docker compose logs`). Both containers use stdout, not stderr — this was previously inconsistent (the bot used stderr, the transcriber used stdout) and is now unified.
+- **File handler** — `RotatingFileHandler` writing to `/data/logs/<name>.log`, max 10MB per file, 5 archived backups.
+
+A duplicate-handler guard prevents double-attachment if `setup_logging` is called more than once in the same process (e.g. during re-import or test runs).
+
+Both handlers use a single consistent format with `datefmt`:
 ```
-2025-01-15 20:34:12 bot INFO: Session 2025-01-15_20-30-00 started in channel #general
-2025-01-15 20:45:33 transcriber INFO: Transcription job queued for session 2025-01-15_20-30-00
+2025-01-15 20:34:12 [scribes.bot] INFO: Session 2025-01-15_20-30-00 started in channel #general
+2025-01-15 20:45:33 [scribes.transcriber] INFO: Transcription job queued for session 2025-01-15_20-30-00
 ```
 
 The shared `/data/logs/` directory is mounted in both Dockerfiles so either container can access the logs for debugging.

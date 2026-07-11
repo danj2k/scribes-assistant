@@ -153,6 +153,14 @@ Both containers log to files in the shared Docker volume at `/data/logs/`:
 
 Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 10MB with old files archived. Both containers use Python's `logging` module with a `RotatingFileHandler` writing to the shared volume, so logs persist across container restarts and are accessible from either container.
 
+Both containers share a single logging setup module (`shared/logging_setup.py`). The `setup_logging_from_config()` function configures the root logger with two handlers — a `StreamHandler` writing to stdout (visible via `docker compose logs`) and a `RotatingFileHandler` writing to `/data/logs/<name>.log` — using a single consistent format:
+
+```
+2026-07-11 20:34:12 [scribes.bot] INFO: Session started
+```
+
+A duplicate-handler guard prevents double-attachment if the function is called more than once in the same process.
+
 ## Configuration
 
 - `config.yaml` — mounted into both containers, controls model selection, thread settings, lexicon defaults. Defaults are defined in `shared/config.py` (`_DEFAULTS`) and deep-copied on each `load_config()` call so mutations to returned config cannot corrupt global state.
