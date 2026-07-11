@@ -73,3 +73,52 @@ class TestConfig:
         })
         c = Config(str(tmp_path / "cfg.yaml"))
         assert c.guild_id == 123
+
+
+class TestBotToken:
+    """Tests for Config.bot_token — Bug #10 regression tests."""
+
+    def test_bot_token_reads_file(self, tmp_path):
+        """bot_token returns the stripped content of the token file."""
+        token_file = tmp_path / "bot_token"
+        token_file.write_text("my.secret.token\n")
+        _write_yaml(tmp_path / "cfg.yaml", {"bot": {"token_file": str(token_file)}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.bot_token == "my.secret.token"
+
+    def test_bot_token_strips_whitespace(self, tmp_path):
+        """bot_token strips leading/trailing whitespace from the file content."""
+        token_file = tmp_path / "bot_token"
+        token_file.write_text("  my.secret.token  \n\n")
+        _write_yaml(tmp_path / "cfg.yaml", {"bot": {"token_file": str(token_file)}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.bot_token == "my.secret.token"
+
+    def test_bot_token_raises_when_file_missing(self, tmp_path):
+        """bot_token raises FileNotFoundError when the token file does not exist.
+
+        Regression test for Bug #10: previously the property returned None
+        silently, causing bot.run(None) to fail with a cryptic py-cord error.
+        """
+        _write_yaml(tmp_path / "cfg.yaml", {"bot": {"token_file": str(tmp_path / "nonexistent")}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        with pytest.raises(FileNotFoundError, match="Bot token file not found"):
+            c.bot_token
+
+    def test_bot_token_raises_when_file_empty(self, tmp_path):
+        """bot_token raises ValueError when the token file exists but is empty."""
+        token_file = tmp_path / "bot_token"
+        token_file.write_text("")
+        _write_yaml(tmp_path / "cfg.yaml", {"bot": {"token_file": str(token_file)}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        with pytest.raises(ValueError, match="Bot token file is empty"):
+            c.bot_token
+
+    def test_bot_token_raises_when_file_whitespace_only(self, tmp_path):
+        """bot_token raises ValueError when the token file has only whitespace."""
+        token_file = tmp_path / "bot_token"
+        token_file.write_text("   \n\n\t\n")
+        _write_yaml(tmp_path / "cfg.yaml", {"bot": {"token_file": str(token_file)}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        with pytest.raises(ValueError, match="Bot token file is empty"):
+            c.bot_token

@@ -123,9 +123,29 @@ class Config:
 
     @property
     def bot_token(self) -> str:
+        """Return the Discord bot token, raising FileNotFoundError if absent.
+
+        The token is read from a Docker secrets file (default
+        ``/run/secrets/bot_token``).  If the file does not exist we raise
+        ``FileNotFoundError`` with a actionable message rather than returning
+        ``None`` — ``bot.run(None)`` produces a cryptic py-cord traceback that
+        gives no hint about the real cause.
+        """
         token_file = self.get("bot.token_file", "/run/secrets/bot_token")
-        if Path(token_file).exists():
-            return Path(token_file).read_text().strip()
+        path = Path(token_file)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Bot token file not found: {token_file}. "
+                f"Create it (e.g. echo 'YOUR_TOKEN' > {token_file}) "
+                f"or configure bot.token_file in config.yaml."
+            )
+        token = path.read_text().strip()
+        if not token:
+            raise ValueError(
+                f"Bot token file is empty: {token_file}. "
+                f"Put your Discord bot token in this file."
+            )
+        return token
 
     # -- Lexicon properties ---------------------------------------------------
 

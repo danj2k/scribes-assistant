@@ -431,3 +431,31 @@ One-line code change in `bot/commands.py`:
 - `test_single_session_allows_new_after_previous_ends`: After ending, a new session in a different guild can be started
 
 **Impact:** Only one recording session can be active at a time. Session ID collisions are impossible. 186/186 tests pass.
+
+---
+
+## Bug #10 — bot_token returns None silently
+
+**Date:** 2026-07-11
+
+**Root cause:** The `Config.bot_token` property in `shared/config.py` only returned a value when the token file existed. If the file was missing (e.g. Docker secret not mounted, wrong path), the property fell through and returned `None` implicitly. `bot/main.py` then called `bot.run(None)`, which fails inside py-cord with a cryptic traceback that gives no hint about the actual cause (missing token file).
+
+**Fix — shared/config.py:**
+- `bot_token` property now raises `FileNotFoundError` with an actionable message when the token file does not exist (includes the expected path and how to create it).
+- Also raises `ValueError` when the file exists but is empty or whitespace-only.
+- Both messages include the token file path so the user knows exactly what to fix.
+
+**Fix — bot/main.py:**
+- `main()` now validates the token early by accessing `config.bot_token` in a try/except block before calling `bot.run()`.
+- On `FileNotFoundError` or `ValueError`, it logs a clear error message and exits with status 1, rather than letting py-cord produce a confusing traceback.
+
+**Tests (tests/test_config.py):**
+- `test_bot_token_reads_file`: Token file with content returns the stripped token.
+- `test_bot_token_strips_whitespace`: Leading/trailing whitespace is stripped.
+- `test_bot_token_raises_when_file_missing`: Missing file raises `FileNotFoundError` (regression test for Bug #10).
+- `test_bot_token_raises_when_file_empty`: Empty file raises `ValueError`.
+- `test_bot_token_raises_when_file_whitespace_only`: Whitespace-only file raises `ValueError`.
+
+Also fixed a pre-existing syntax bug in `test_config_guild_id`: the `discord` dict literal was missing a closing brace, which would have been a syntax error if the test had been run with a YAML writer that didn't tolerate the malformed input.
+
+**Impact:** Missing or empty bot tokens now produce a clear, actionable error message at startup instead of a cryptic py-cord traceback. 191/191 tests pass.

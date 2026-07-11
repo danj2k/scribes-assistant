@@ -57,6 +57,8 @@ Session IDs are derived from the recording start time: `YYYY-MM-DD_HH-MM-SS`. Th
 
 Bot tokens and other secrets are provided via Docker secrets, which mount as files at `/run/secrets/<name>`. The bot reads the token from `/run/secrets/bot_token` rather than environment variables. This is more secure — secrets are not visible in process listings or Docker inspect output.
 
+The `Config.bot_token` property validates the token file at access time: if the file does not exist, it raises `FileNotFoundError` with an actionable message (including the expected path and how to create it); if the file exists but is empty or whitespace-only, it raises `ValueError`. `bot/main.py` catches both exceptions at startup, logs a clear error message, and exits with status 1. This prevents the cryptic traceback that `bot.run(None)` produces when the token is silently missing.
+
 ### Model Weight Persistence
 
 sherpa-onnx model weights (~609MB for whisper-small; varies by model size) are stored in a Docker volume mounted at `/data/models/whisper-{model_size}/`. The model size is set via the `transcriber.model` config key (default: `small`). This volume persists across container rebuilds — only downloaded once on first run.

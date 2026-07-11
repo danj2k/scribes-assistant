@@ -108,13 +108,21 @@ def main():
     delivery = DeliveryLoop(bot, db, logger)
     bot.delivery_loop = delivery
 
+    # Validate the bot token early — without it, py-cord produces a cryptic
+    # traceback that gives no hint about the actual cause.
+    try:
+        token = config.bot_token
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(f"Cannot start bot: {exc}")
+        sys.exit(1)
+
     # Register slash commands
     setup_commands(bot)
 
     # Register global error handler
     setup_error_handler(bot)
 
-    bot.run(config.bot_token)
+    bot.run(token)
 
 
 if __name__ == "__main__":
