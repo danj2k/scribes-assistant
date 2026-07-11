@@ -116,10 +116,7 @@ def setup_commands(bot: commands.Bot):
             )
             return
 
-        # Store the voice client reference and recording future for /stop
-        if not hasattr(bot, "_voice_clients"):
-            bot._voice_clients = {}
-        bot._voice_clients[interaction.guild_id] = vc  # type: ignore
+        # Store the recording future for /stop
         if not hasattr(bot, "_recording_futures"):
             bot._recording_futures = {}
         bot._recording_futures[interaction.guild_id] = recording_done

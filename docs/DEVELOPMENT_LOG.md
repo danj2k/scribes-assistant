@@ -612,3 +612,18 @@ The `_match_case()` call is applied at both correction stages (exact match and f
 - `TestMatchCase` (8 tests in `test_lexicon.py`) — all-caps on exact match, title case on exact match, lowercase returns canonical on exact match, all-caps on fuzzy match, title case on fuzzy match, mixed casing returns canonical, single-char uppercase, case preservation with hyphenated term via `_correct_text`
 
 **Impact:** Shouting ("THERAN") is now preserved as "THERON" after correction, and title-case words ("Theran") get proper title-case corrections ("Theron"). All-lowercase words still get the canonical form. 243/243 tests pass (8 new).
+
+## Bug #16 — `bot._voice_clients` dict is never read (dead code) (minor)
+
+**Commit:** (pending)
+
+**Problem:** `start_command` stored the py-cord `VoiceClient` in `bot._voice_clients[interaction.guild_id]`, but this dict was never read anywhere in the codebase. `stop_command` uses `interaction.guild.voice_client` (py-cord's built-in per-guild voice client accessor) instead. The dict served no purpose — it was likely added with the intention of using it for `/stop` but was superseded by py-cord's own API.
+
+**Investigation:** Confirmed that speaker names are NOT stored in `_voice_clients`. Speaker names are resolved from the Discord guild member cache during the recording callback and stored in the `audio_files` table (`speaker_name` column). The transcriber reads speaker names from the database, not from any bot-side dict. Removing `_voice_clients` has no impact on speaker labelling in transcripts.
+
+**Fix:** Removed the three lines that initialised and populated `bot._voice_clients`. The adjacent `bot._recording_futures` dict (used by `stop_command` to await the recording callback future) is retained — it IS read.
+
+**Files changed:**
+- `bot/commands.py` — removed `bot._voice_clients` initialisation and assignment (3 lines)
+
+**Impact:** No functional change. Dead code removed. 243/243 tests pass (no new tests — the attribute was never referenced in tests or any other code).
