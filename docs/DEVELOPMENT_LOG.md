@@ -803,3 +803,51 @@ The `/help` command was also unrestricted, but this is intentional — `/help` o
    - `TestIdleTimeout` (5): Timeout ends session and disconnects; no active session just disconnects; cancellation is silent (no session end, no crash); cleans up task from `_idle_tasks` dict; not-recording state doesn't stop the bot.
 
 **Impact:** 304/304 tests pass (0 warnings). Net change: -5 absence tests, +23 positive tests = +18 tests. The test suite now covers two previously untested modules (delivery.py and voice.py) and no longer carries tests for removed functionality.
+
+---
+
+## Deployment Fixes: docker-compose.yml (#1–#3)
+
+**Date:** 2026-07-11
+
+A comprehensive repository review identified 10 deployment-layer shortcomings. This entry covers fixes #1, #2, and #3 — all related to `docker-compose.yml`.
+
+### Fix #1: config.yaml not mounted into containers (CRITICAL)
+
+**Problem:** `docker-compose.yml` had no volume mount for `config.yaml` in either service. Neither Dockerfile copies it (the bot Dockerfile had `COPY config.yaml* /app/` but the glob matches `config.yaml.example` when the real config is absent). Both containers fell back to defaults only — no guild ID, no transcript channel, no custom model settings.
+
+**Fix:**
+- Added `./config.yaml:/data/config.yaml:ro` volume mount to both `bot` and `transcriber` services
+- Added `CONFIG_PATH=/data/config.yaml` environment variable to both services (the bot already read this env var; the transcriber was updated to read it too)
+- Updated `transcriber/main.py:run_worker()` to read `CONFIG_PATH` from env, falling back to `/data/config.yaml` — consistent with the bot's config path resolution
+- Removed the misleading `COPY config.yaml* /app/` from `bot/Dockerfile` (the glob copies the example file when the real config doesn't exist; config is now always mounted at runtime)
+
+### Fix #2: bot_token secret not attached to bot service (CRITICAL)
+
+**Problem:** `docker-compose.yml` defined a top-level `secrets:` block with `bot_token` from `./secrets/bot_token`, but the `bot:` service had no `secrets:` key. Docker Compose requires each service to explicitly declare which secrets it uses. Without `secrets: [bot_token]` under `bot:`, the file was never mounted at `/run/secrets/bot_token`, so the bot exited with `FileNotFoundError`.
+
+**Fix:**
+- Added `secrets: [bot_token]` under the `bot:` service
+
+### Fix #3: Bot health check not meaningful (CRITICAL)
+
+**Problem:** The bot's health check ran `python -c "import discord; print('ok')"`. This only verified the library was importable — it said nothing about the Discord connection, event loop health, or gateway responsiveness. A crashed bot with a dead event loop would still pass the check.
+
+**Fix:**
+- Created `bot/healthcheck.py` — a standalone health check script that reads the heartbeat file (`/data/bot.heartbeat`) and checks its modification time. If the file is missing or older than 90 seconds, the check fails (exit 1). If recent, it passes (exit 0).
+- Added heartbeat mechanism to `bot/main.py` (`ScribesBot`):
+  - `_write_heartbeat()` — writes current timestamp to `/data/bot.heartbeat`
+  - `_heartbeat_loop()` — background task that updates the heartbeat every 30 seconds while the bot is running
+  - `on_ready()` — writes an initial heartbeat immediately (only fires after the gateway handshake completes), then starts the heartbeat loop task
+- Updated `docker-compose.yml` health check from the trivial import test to `python /app/bot/healthcheck.py` with 30s interval, 5s timeout, 3 retries, and 30s start period
+
+The heartbeat approach catches:
+- Dead event loop (stops updating the file)
+- Crashed bot process (no process to write the file)
+- Lost gateway connection (on_ready never fires, no initial heartbeat)
+
+**Tests added (11 tests):**
+- `tests/test_healthcheck.py` (8 tests): healthcheck script logic (fresh/missing/stale/boundary), heartbeat writing, heartbeat loop, on_ready integration, task not restarted if already running
+- `tests/test_transcriber_worker.py::TestRunWorkerConfigPath` (3 tests): explicit config path, env var config path, default fallback
+
+**Impact:** 315/315 tests pass (0 warnings).

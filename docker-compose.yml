@@ -6,19 +6,24 @@ services:
       dockerfile: bot/Dockerfile
     container_name: scribes-bot
     restart: unless-stopped
+    secrets:
+      - bot_token
     volumes:
       - scribes-data:/data
+      - ./config.yaml:/data/config.yaml:ro
+    environment:
+      - CONFIG_PATH=/data/config.yaml
     networks:
       - scribes-net
     depends_on:
       transcriber:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import discord; print('ok')"]
+      test: ["CMD", "python", "/app/bot/healthcheck.py"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
 
   # Transcriber service — polls for queued audio, runs sherpa-onnx
   transcriber:
@@ -29,6 +34,9 @@ services:
     restart: unless-stopped
     volumes:
       - scribes-data:/data
+      - ./config.yaml:/data/config.yaml:ro
+    environment:
+      - CONFIG_PATH=/data/config.yaml
     networks:
       - scribes-net
     deploy:

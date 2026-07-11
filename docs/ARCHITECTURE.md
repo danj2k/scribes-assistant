@@ -31,7 +31,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - SQLite3 (session/queue management)
 - ffmpeg (audio processing, WAV handling)
 
-**Dockerfile:** `Dockerfile.bot` — Python slim base, minimal dependencies.
+**Dockerfile:** `bot/Dockerfile` — Python 3.11 slim base, minimal dependencies. The config file is bind-mounted at runtime (not baked into the image) so the same image works across environments.
 
 ### Transcriber (scribes-transcriber)
 
@@ -53,7 +53,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - ffmpeg (audio conversion to 16kHz mono WAV)
 - SQLite3 (queue and lexicon access)
 
-**Dockerfile:** `Dockerfile.transcriber` — Python base with sherpa-onnx and ffmpeg.
+**Dockerfile:** `transcriber/Dockerfile` — Python 3.11 base with sherpa-onnx and ffmpeg. The config file is bind-mounted at runtime (not baked into the image).
 
 **Graceful shutdown:** The transcriber registers a SIGTERM handler (Docker sends SIGTERM on `docker stop`). The handler sets a module-level flag that the main loop checks between operations; the loop exits cleanly after the current transcription finishes, then closes the database. This avoids SIGKILL after the Docker grace period, which would lose in-progress work. SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt`.
 
@@ -163,9 +163,14 @@ A duplicate-handler guard prevents double-attachment if the function is called m
 
 ## Configuration
 
-- `config.yaml` — mounted into both containers, controls model selection, thread settings, lexicon defaults, and logging. Logging is configured via a single shared `logging` section (`level`, `max_size_mb`, `backup_count`) read by both containers — there are no bot-specific or transcriber-specific logging keys. Defaults are defined in `shared/config.py` (`_DEFAULTS`) and deep-copied on each `load_config()` call so mutations to returned config cannot corrupt global state.
+- `config.yaml` — bind-mounted into both containers at `/data/config.yaml:ro` via docker-compose. The `CONFIG_PATH` environment variable points both services to this path. Controls model selection, thread settings, lexicon defaults, and logging. Logging is configured via a single shared `logging` section (`level`, `max_size_mb`, `backup_count`) read by both containers — there are no bot-specific or transcriber-specific logging keys. Defaults are defined in `shared/config.py` (`_DEFAULTS`) and deep-copied on each `load_config()` call so mutations to returned config cannot corrupt global state. The config file is never baked into the Docker image; it is always mounted at runtime so the same image works across environments.
 - `shared/tar_utils.py` — safe tarfile extraction with path-traversal protection, used by both the transcriber worker and the standalone download script. Validates each member's destination path before extraction and rejects absolute paths, `..` traversal, and symlinks escaping the target directory.
-- Docker secrets — bot token and any other sensitive values, mounted at `/run/secrets/`. The bot validates the token file at startup: if the file is missing or empty, `main()` logs a clear error and exits rather than passing `None` to `bot.run()` (which produces a cryptic py-cord traceback).
+- Docker secrets — bot token mounted at `/run/secrets/bot_token` via the `secrets` block in docker-compose.yml. The bot service explicitly declares `secrets: [bot_token]` so Docker Compose mounts the file. The bot validates the token file at startup: if the file is missing or empty, `main()` logs a clear error and exits rather than passing `None` to `bot.run()` (which produces a cryptic py-cord traceback).
+
+### Health Checks
+
+- **Bot health check** — `bot/healthcheck.py` verifies that the bot's event loop is alive and the Discord gateway is connected. The bot writes a heartbeat file (`/data/bot.heartbeat`) on `on_ready` (which only fires after the gateway handshake completes) and updates it every 30 seconds via a background task. The health check reads the file's modification time and declares unhealthy if it is older than 90 seconds (3 missed cycles). This catches a dead event loop, a crashed bot process, or a lost gateway connection — all of which stop updating the heartbeat. The trivial import-only check (`python -c "import discord; print('ok')"`) was replaced with this meaningful check because a crashed bot with a dead event loop would still pass the import test.
+- **Transcriber health check** — not yet implemented (see deployment findings #4 in DEVELOPMENT_LOG.md).
 
 ## Dependencies
 

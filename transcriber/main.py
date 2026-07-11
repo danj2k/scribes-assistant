@@ -4,6 +4,7 @@ Polls the shared database for queued audio files, runs sherpa-onnx
 transcription, and stores results for the bot's delivery loop.
 """
 
+import os
 import sys
 import time
 import signal
@@ -122,8 +123,15 @@ def _correct_text(text: str, lexicon: Lexicon | None) -> str:
     return re.sub(r"\w+(?:['-]\w+)*", _replace_word, text)
 
 
-def run_worker(config_path: str = "/app/config.yaml"):
-    """Main worker loop — poll DB, transcribe, store transcript for delivery."""
+def run_worker(config_path: str | None = None):
+    """Main worker loop — poll DB, transcribe, store transcript for delivery.
+
+    If *config_path* is None, falls back to the CONFIG_PATH environment
+    variable, then to /data/config.yaml — consistent with the bot's
+    config path.
+    """
+    if config_path is None:
+        config_path = os.environ.get("CONFIG_PATH", "/data/config.yaml")
     config = Config(config_path)
     setup_logging_from_config(config, "transcriber")
 

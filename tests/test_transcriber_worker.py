@@ -528,3 +528,49 @@ class TestProgressHookDedup:
             caplog.clear()
             _progress_hook(1, 1024, 0)
         assert not any("Downloading" in r.message for r in caplog.records)
+
+
+class TestRunWorkerConfigPath:
+    """Tests for run_worker config path resolution.
+
+    Verifies that run_worker reads CONFIG_PATH from env, falling back
+    to /data/config.yaml — consistent with the bot's config path.
+    """
+
+    def test_explicit_config_path_used(self):
+        """Explicit config_path argument takes precedence over env."""
+        from transcriber.main import run_worker
+        with patch("transcriber.main.Config") as mock_config, \
+             patch.dict("os.environ", {"CONFIG_PATH": "/env/config.yaml"}):
+            # Config succeeds, but Database fails — that's fine,
+            # we only care about which path Config was called with.
+            mock_config.return_value = MagicMock()
+            with patch("transcriber.main.setup_logging_from_config"), \
+                 patch("transcriber.main.Database", side_effect=RuntimeError("stop")):
+                with pytest.raises(RuntimeError, match="stop"):
+                    run_worker(config_path="/custom/path.yaml")
+                mock_config.assert_called_once_with("/custom/path.yaml")
+
+    def test_env_config_path_used_when_no_argument(self):
+        """CONFIG_PATH env var used when config_path is None."""
+        from transcriber.main import run_worker
+        with patch("transcriber.main.Config") as mock_config, \
+             patch.dict("os.environ", {"CONFIG_PATH": "/env/config.yaml"}):
+            mock_config.return_value = MagicMock()
+            with patch("transcriber.main.setup_logging_from_config"), \
+                 patch("transcriber.main.Database", side_effect=RuntimeError("stop")):
+                with pytest.raises(RuntimeError, match="stop"):
+                    run_worker()
+                mock_config.assert_called_once_with("/env/config.yaml")
+
+    def test_default_config_path_when_no_env(self):
+        """Falls back to /data/config.yaml when no env or argument."""
+        from transcriber.main import run_worker
+        with patch("transcriber.main.Config") as mock_config, \
+             patch.dict("os.environ", {}, clear=True):
+            mock_config.return_value = MagicMock()
+            with patch("transcriber.main.setup_logging_from_config"), \
+                 patch("transcriber.main.Database", side_effect=RuntimeError("stop")):
+                with pytest.raises(RuntimeError, match="stop"):
+                    run_worker()
+                mock_config.assert_called_once_with("/data/config.yaml")

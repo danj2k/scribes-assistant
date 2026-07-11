@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir /app/shared
 
 # Copy bot code
 COPY bot/ /app/bot/
-COPY config.yaml* /app/
 RUN pip install --no-cache-dir -r /app/bot/requirements.txt
 
 # Create data directories

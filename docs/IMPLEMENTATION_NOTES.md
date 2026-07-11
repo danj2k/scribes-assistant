@@ -84,6 +84,22 @@ Bot tokens and other secrets are provided via Docker secrets, which mount as fil
 
 The `Config.bot_token` property validates the token file at access time: if the file does not exist, it raises `FileNotFoundError` with an actionable message (including the expected path and how to create it); if the file exists but is empty or whitespace-only, it raises `ValueError`. `bot/main.py` catches both exceptions at startup, logs a clear error message, and exits with status 1. This prevents the cryptic traceback that `bot.run(None)` produces when the token is silently missing.
 
+The `bot:` service in `docker-compose.yml` explicitly declares `secrets: [bot_token]` so Docker Compose mounts the file. Without this declaration, the top-level `secrets:` block defines the secret but never attaches it to the service.
+
+### Config File Mount
+
+`config.yaml` is bind-mounted into both containers at `/data/config.yaml:ro` via docker-compose volumes. The `CONFIG_PATH` environment variable (set to `/data/config.yaml` for both services) tells each container where to find the config. The config file is never baked into the Docker image — this ensures the same image works across environments (dev, staging, production) with different configs. The bot Dockerfile does not `COPY` any config file; the transcriber reads `CONFIG_PATH` from env with the same default.
+
+### Bot Health Check (Heartbeat)
+
+The bot's Docker health check verifies the event loop is alive and the Discord gateway is connected, rather than just checking that the library is importable. The mechanism:
+
+1. On `on_ready` (fires after the gateway handshake completes), the bot writes a timestamp to `/data/bot.heartbeat` and starts a background `_heartbeat_loop` task.
+2. The loop updates the heartbeat file every 30 seconds.
+3. `bot/healthcheck.py` reads the file's modification time. If the file is missing or older than 90 seconds (3 missed update cycles), the check fails (exit 1). Otherwise it passes (exit 0).
+
+This catches three failure modes that a trivial `import discord` check would miss: a dead event loop (stops updating), a crashed process (no process to write), and a lost gateway connection (on_ready never fires, no initial heartbeat). The 90-second threshold gives 3x tolerance over the 30-second update interval, avoiding false positives during momentary event loop congestion.
+
 ### Model Weight Persistence
 
 sherpa-onnx model weights (~609MB for whisper-small; varies by model size) are stored in a Docker volume mounted at `/data/models/whisper-{model_size}/`. The model size is set via the `transcriber.model` config key (default: `small`). This volume persists across container rebuilds — only downloaded once on first run.
