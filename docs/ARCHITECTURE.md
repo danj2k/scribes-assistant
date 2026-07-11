@@ -29,7 +29,6 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - PyNaCl (voice encryption, required by py-cord for voice support)
 - davey (DAVE end-to-end encryption protocol for voice, required by py-cord 2.8.0)
 - SQLite3 (session/queue management)
-- ffmpeg (audio processing, WAV handling)
 
 **Dockerfile:** `bot/Dockerfile` — Python 3.11 slim base, minimal dependencies. The config file is bind-mounted at runtime (not baked into the image) so the same image works across environments.
 
@@ -54,10 +53,10 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - sherpa-onnx (speech-to-text, Whisper — model size configurable, default "small")
 - Levenshtein (fuzzy string matching for post-transcription lexicon correction)
 - pyspellchecker (English dictionary gate — prevents false-positive corrections of common English words to D&D terms; used for O(1) set membership only, not for its own correction suggestions)
-- ffmpeg (audio conversion to 16kHz mono WAV)
+- soundfile (audio file I/O — reads WAV files into numpy arrays; bundles its own libsndfile)
 - SQLite3 (queue and lexicon access)
 
-**Dockerfile:** `transcriber/Dockerfile` — Python 3.11 base with sherpa-onnx and ffmpeg. The config file is bind-mounted at runtime (not baked into the image).
+**Dockerfile:** `transcriber/Dockerfile` — Python 3.11 base with sherpa-onnx and soundfile. Both libraries ship self-contained pip wheels (sherpa-onnx bundles libonnxruntime and libasound; soundfile bundles libsndfile), so no system audio libraries are installed. The config file is bind-mounted at runtime (not baked into the image).
 
 **Graceful shutdown:** The transcriber registers a SIGTERM handler (Docker sends SIGTERM on `docker stop`). The handler sets a module-level flag that the main loop checks between operations; the loop exits cleanly after the current transcription finishes, then closes the database. This avoids SIGKILL after the Docker grace period, which would lose in-progress work. SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt`.
 
@@ -135,7 +134,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 2. Safety net: queries get_queued_sessions_without_files() and marks any queued sessions with zero audio files as FAILED (catches empty recordings that slipped past the callback)
 3. Updates the audio file status to TRANSCRIBING
 4. Loads lexicon from YAML file, builds hotwords string for the recogniser and keeps the Lexicon instance for post-transcription correction
-5. Converts WAV files to 16kHz mono via ffmpeg
+5. Reads WAV files via `soundfile.read()` (returns numpy float32 array), performs stereo-to-mono downmix with `audio.mean(axis=1)`, and passes samples directly to `stream.accept_waveform(sample_rate, audio)` — sherpa-onnx handles resampling internally
 6. Runs sherpa-onnx Whisper model (size from config, default "small") with hotwords bias. Audio samples are passed as numpy arrays directly to `accept_waveform()` — no Python list conversion, which avoids creating millions of float objects for long recordings
 7. Captures token-level timestamps from the recogniser result
 8. Groups tokens into segments, applies lexicon correction via a three-stage pipeline (exact lexicon match → English dictionary gate → Levenshtein fuzzy match) to each segment's text, and stores corrected segments in the transcript_segments table with the speaker's name
@@ -155,7 +154,7 @@ The database file (`/data/queue.db`) is the coordination point between bot and t
 Both containers log to files in the shared Docker volume at `/data/logs/`:
 
 - **`/data/logs/bot.log`** — Discord gateway events, voice channel activity, slash command invocations, session state transitions
-- **`/data/logs/transcriber.log`** — transcription job progress, model loading, ffmpeg conversion output, error traces
+- **`/data/logs/transcriber.log`** — transcription job progress, model loading, error traces
 
 Log level is configurable in `config.yaml` (default: INFO). Log files rotate at 10MB with old files archived. Both containers use Python's `logging` module with a `RotatingFileHandler` writing to the shared volume, so logs persist across container restarts and are accessible from either container.
 
@@ -184,7 +183,7 @@ A duplicate-handler guard prevents double-attachment if the function is called m
 - **PyNaCl** — Required by py-cord for voice channel encryption
 - **davey** — Discord DAVE end-to-end encryption protocol for voice, required by py-cord 2.8.0
 - **sherpa-onnx** — Fast, CPU-optimised speech-to-text with Python bindings
-- **ffmpeg** — Audio format conversion and processing
+- **soundfile** — Audio file I/O (reads WAV into numpy arrays); bundles its own libsndfile
 - **SQLite** — Lightweight, file-based database for queue coordination
 
 ## Open Questions

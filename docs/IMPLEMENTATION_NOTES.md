@@ -10,9 +10,14 @@ py-cord decodes Opus to WAV internally before passing audio data to the receive 
 
 sherpa-onnx will consume as many CPU cores as available by default. On a 4-core machine, this will starve the bot container and the OS. Explicitly clamp thread count in the sherpa-onnx configuration — likely to 2-3 cores, leaving headroom for the bot and system processes. Test empirically to find the right balance.
 
-### WAV to 16kHz Conversion
+### Audio Format Handling
 
-sherpa-onnx expects 16kHz mono WAV input. py-cord delivers audio at Discord's native rate (48kHz stereo). ffmpeg must be used in the transcriber to convert before running inference. This is an extra step but unavoidable given the py-cord limitation.
+py-cord decodes Opus to WAV internally before passing audio data to the receive callback, delivering audio at Discord's native rate (48kHz stereo). The transcriber reads these WAV files with `soundfile.read()`, which returns a numpy float32 array. No external conversion step is needed:
+
+- **Resampling** — the transcriber passes the original sample rate (48kHz) to `stream.accept_waveform(sample_rate, audio)`. sherpa-onnx resamples internally.
+- **Stereo to mono** — done in Python with `audio.mean(axis=1)`.
+
+No ffmpeg or external audio conversion tool is used anywhere in the pipeline. Both sherpa-onnx (bundles libonnxruntime and libasound in its pip wheel) and soundfile (bundles libsndfile in `_soundfile_data/`) are self-contained — no system audio libraries are installed in the container.
 
 ### Lexicon Integration — Two-Stage Correction
 

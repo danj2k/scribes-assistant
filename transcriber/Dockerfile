@@ -1,10 +1,12 @@
 FROM python:3.11-slim
 
-# Install system dependencies for sherpa-onnx and soundfile
+# build-essential is needed for compiling any pip packages without prebuilt
+# wheels.  sherpa-onnx and soundfile both ship self-contained wheels —
+# sherpa-onnx bundles libonnxruntime and libasound in its package directory,
+# and soundfile bundles libsndfile in _soundfile_data/.  No system audio
+# libraries are required.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    libsndfile1 \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

@@ -199,7 +199,7 @@ The bot logs to local files for debugging infrastructure issues that cannot be r
 | Container | Log file | What it contains |
 |-----------|----------|------------------|
 | `bot` | `/data/logs/bot.log` | Discord connection events, voice channel joins/leaves, slash command invocations, session lifecycle |
-| `transcriber` | `/data/logs/transcriber.log` | Transcription jobs started/completed, model loading, ffmpeg conversions, errors |
+| `transcriber` | `/data/logs/transcriber.log` | Transcription jobs started/completed, model loading, errors |
 
 ### Viewing logs
 
