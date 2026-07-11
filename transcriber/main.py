@@ -6,6 +6,7 @@ transcription, and stores results for the bot's delivery loop.
 
 import sys
 import time
+import signal
 import logging
 import logging.handlers
 import asyncio
@@ -20,6 +21,27 @@ from shared.lexicon import Lexicon, build_hotwords
 from transcriber.worker import download_model, TranscriptionWorker
 
 logger = logging.getLogger("scribes.transcriber")
+
+# Set by the SIGTERM handler so the main loop knows to exit
+# after the current operation completes. Docker sends SIGTERM
+# on `docker stop`; without this, the process is SIGKILLed
+# after the grace period, losing any in-progress transcription.
+_shutdown_requested = False
+
+
+def _handle_sigterm(signum, frame):
+    """SIGTERM handler — request graceful shutdown.
+
+    Sets a flag that the main loop checks between operations. We
+    do NOT raise an exception here (unlike SIGINT/KeyboardInterrupt)
+    because the signal can arrive during a C extension call (sherpa-onnx)
+    that is not safe to interrupt mid-execution. Instead, we let the
+    current transcription finish and check the flag at the next loop
+    iteration.
+    """
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info("SIGTERM received — will shut down after current operation completes")
 
 
 def _format_timestamp(seconds: float) -> str:
@@ -133,9 +155,14 @@ def run_worker(config_path: str = "/app/config.yaml"):
     )
     worker.load_model()
 
+    # Register SIGTERM handler so `docker stop` triggers a graceful
+    # shutdown instead of SIGKILL after the grace period. SIGINT
+    # (Ctrl-C) is still caught via KeyboardInterrupt below.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     logger.info("Transcriber worker started, polling for queued files...")
 
-    while True:
+    while not _shutdown_requested:
         try:
             # Safety net: clean up sessions stuck in QUEUED with no audio
             # files (e.g. empty recording where the callback's fail_session
@@ -214,11 +241,15 @@ def run_worker(config_path: str = "/app/config.yaml"):
                 db.update_file_status(file_id, "failed")
 
         except KeyboardInterrupt:
-            logger.info("Shutting down transcriber worker")
             break
         except Exception as e:
             logger.error(f"Worker loop error: {e}")
             time.sleep(config.poll_interval)
+
+    if _shutdown_requested:
+        logger.info("Graceful shutdown complete (SIGTERM)")
+    else:
+        logger.info("Shutting down transcriber worker (SIGINT)")
 
     db.close()
 

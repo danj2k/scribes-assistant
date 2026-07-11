@@ -51,6 +51,8 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 
 **Dockerfile:** `Dockerfile.transcriber` — Python base with sherpa-onnx and ffmpeg.
 
+**Graceful shutdown:** The transcriber registers a SIGTERM handler (Docker sends SIGTERM on `docker stop`). The handler sets a module-level flag that the main loop checks between operations; the loop exits cleanly after the current transcription finishes, then closes the database. This avoids SIGKILL after the Docker grace period, which would lose in-progress work. SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt`.
+
 ### Shared Volume
 
 A Docker volume mounted at `/data` in both containers provides the filesystem interface:

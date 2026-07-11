@@ -459,3 +459,27 @@ One-line code change in `bot/commands.py`:
 Also fixed a pre-existing syntax bug in `test_config_guild_id`: the `discord` dict literal was missing a closing brace, which would have been a syntax error if the test had been run with a YAML writer that didn't tolerate the malformed input.
 
 **Impact:** Missing or empty bot tokens now produce a clear, actionable error message at startup instead of a cryptic py-cord traceback. 191/191 tests pass.
+
+## 2025-07-11 — Bug #11: Transcriber Doesn't Handle SIGTERM for Graceful Shutdown
+
+**Symptom:** Running `docker stop scribes-transcriber` would kill the process with SIGKILL after the 10-second grace period. Any in-progress transcription work was lost, and the database connection was not closed cleanly.
+
+**Root cause:** The transcriber's main loop in `transcriber/main.py` only caught `KeyboardInterrupt` (SIGINT). Docker sends `SIGTERM` on `docker stop`, which Python's default handler terminates the process with — but not before Docker escalates to `SIGKILL` after the grace period. There was no `SIGTERM` handler, so the process had no opportunity to shut down gracefully.
+
+**Fix — transcriber/main.py:**
+- Added a module-level `_shutdown_requested` flag and a `_handle_sigterm()` signal handler that sets the flag and logs an informational message.
+- Registered the handler with `signal.signal(signal.SIGTERM, _handle_sigterm)` before the main loop.
+- Changed the loop condition from `while True` to `while not _shutdown_requested` so the loop exits after the current operation completes.
+- After the loop, logs whether shutdown was triggered by SIGTERM or SIGINT, then closes the database.
+
+**Design decision — flag, not exception:** The SIGTERM handler sets a flag rather than raising an exception. Raising from a signal handler is dangerous when the signal arrives during a C extension call (sherpa-onnx inference, SQLite writes) — the exception can propagate into a C frame that doesn't expect it, causing undefined behaviour or a segfault. The flag-based approach is safe because it only checks at Python-level loop boundaries (between transcriptions), ensuring the current file always completes or fails cleanly. This means a transcription in progress when SIGTERM arrives will run to completion before shutdown — acceptable since most transcriptions finish well within Docker's 10-second grace period, and partial work is worse than a few seconds of delay.
+
+SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt` for interactive use, providing immediate interruption.
+
+**Tests (tests/test_sigterm_handling.py):**
+- `test_handler_sets_shutdown_flag`: Calling `_handle_sigterm` sets `_shutdown_requested` to True.
+- `test_handler_is_idempotent`: Multiple calls keep the flag set.
+- `test_handler_does_not_raise`: The handler must not raise (it runs in a signal context).
+- `test_flag_resets`: The flag can be reset for clean test isolation.
+
+**Impact:** `docker stop scribes-transcriber` now triggers a clean shutdown — the current transcription (if any) completes, the database is closed, and the process exits 0. 195/195 tests pass.

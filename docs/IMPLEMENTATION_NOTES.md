@@ -110,6 +110,21 @@ Discord slash commands have built-in parameter validation — mistyped command n
 
 These are normal application logic responses, not exceptions. Use `respond()` or `respond(embed=error_embed)` to give clear feedback.
 
+### Transcriber Signal Handling (SIGTERM)
+
+Docker sends `SIGTERM` to a container's PID 1 process on `docker stop`. If the process doesn't exit within the grace period (default 10 seconds), Docker sends `SIGKILL` — which cannot be caught and terminates the process immediately. Any in-progress transcription work would be lost.
+
+The transcriber registers a `SIGTERM` handler (`_handle_sigterm`) that sets a module-level `_shutdown_requested` flag. The main polling loop checks this flag at the top of each iteration (`while not _shutdown_requested`). When SIGTERM arrives:
+
+1. The handler sets the flag and logs an informational message
+2. If a transcription is in progress, it runs to completion (sherpa-onnx C extension calls are not safe to interrupt mid-execution)
+3. On the next loop iteration, the `while not _shutdown_requested` check fails and the loop exits
+4. The database is closed cleanly and the process exits
+
+The handler does NOT raise an exception (unlike SIGINT, which triggers `KeyboardInterrupt`). Raising from a signal handler is dangerous when the signal arrives during a C extension call (sherpa-onnx, SQLite) — the exception can propagate into a frame that doesn't expect it, causing undefined behaviour or a segfault. The flag-based approach is safe because it only checks at Python-level loop boundaries.
+
+SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt` in the loop's `except` clause, providing immediate interruption for interactive use.
+
 ### Single-Session Enforcement
 
 This bot is designed for a single D&D group, so only one recording session should be active at any time — regardless of which Discord guild it was started in. `start_command` calls `get_any_active_session()` (which queries across ALL guilds, not just the calling guild) before creating a new session. If a session is already active, `/start` returns an ephemeral error ("A recording session is already in progress. Use `/stop` to end it first.") and does not create a new session record. This also eliminates the original Bug #9 (session ID collision risk from two starts in the same UTC second): since only one session can be active at a time, two sessions can never be created in the same second.
