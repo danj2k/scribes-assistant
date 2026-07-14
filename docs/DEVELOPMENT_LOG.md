@@ -1008,3 +1008,30 @@ A third issue: py-cord 2.8.0's DAVE router invokes the after-callback twice on e
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** The bot now has the native Opus library it needs to decode audio. On failed sessions, it leaves the voice channel and tells the user instead of sitting silently.
+
+---
+
+## 2026-07-14: Fix `assert self.sink.client` AssertionError (eighth monkey-patch)
+
+### Problem
+
+After deploying the libopus fix and auto-disconnect, `/start` still failed with `AssertionError` at `opus.py:666`: `assert self.sink.client`. The bot joined the voice channel, started recording, but crashed on the first incoming audio packet.
+
+### Root Cause
+
+The DAVE refactor commented out the assignment of `sink._client` in `AudioReader.__init__` (reader.py line 89: `# self.sink._client = client`). The `Sink.client` property returns `self.vc`, but `self.vc` is never set — the old API called `Sink.init(vc)` to set it, but that call was also removed. So `sink.client` returns `None`, and `PacketDecoder._process_packet` hits the assertion on the first packet.
+
+### Fix
+
+Patched `VoiceClient.start_recording` to set `sink.vc = self` before calling the original method, replicating the old `Sink.init(vc)` behaviour. Guarded with `_start_recording_patched` flag.
+
+### Verification
+
+- 328/328 tests pass
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — added patch #8 (start_recording / sink.vc)
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** The sink now has a reference to the VoiceClient, so the entire decode and write pipeline can access guild members, SSRC mappings, and the connection state.

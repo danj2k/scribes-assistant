@@ -45,6 +45,13 @@ from discord.ext import commands
 #    We wrap the original to extract .pcm (decoded PCM bytes) from
 #    VoiceData before handing it to AudioData.write().
 #
+# 8. VoiceClient.start_recording — the DAVE refactor commented out the
+#    assignment of sink._client in AudioReader.__init__ (reader.py:89),
+#    so sink.vc is never set and sink.client returns None.  We patch
+#    start_recording to set sink.vc = self before creating the AudioReader.
+#    Without this, PacketDecoder._process_packet hits
+#    "assert self.sink.client" (AssertionError) on the first audio packet.
+#
 # All patches are guarded with hasattr() so they are no-ops if py-cord
 # ever fixes this upstream or if downgrading to 2.6.3.
 
@@ -88,6 +95,23 @@ if not hasattr(_VoiceClient, "recording"):
 if not hasattr(_VoiceClient, "decoder"):
     from discord.opus import Decoder as _Decoder
     _VoiceClient.decoder = property(lambda self: _Decoder())
+
+# Patch start_recording to set sink.vc before creating AudioReader.
+# The DAVE refactor commented out the assignment of sink._client in
+# AudioReader.__init__ (reader.py line 89: "# self.sink._client = client").
+# Sink.client is a property that returns self.vc, so without this patch
+# sink.client is None and PacketDecoder._process_packet hits
+# "assert self.sink.client" (AssertionError) on the first audio packet.
+# The old API was Sink.init(vc) which set self.vc = vc; we replicate that.
+if not getattr(_VoiceClient, "_start_recording_patched", False):
+    _original_start_recording = _VoiceClient.start_recording
+
+    def _patched_start_recording(self, sink, callback, *args, **kwargs):
+        sink.vc = self
+        return _original_start_recording(self, sink, callback, *args, **kwargs)
+
+    _VoiceClient.start_recording = _patched_start_recording
+    _VoiceClient._start_recording_patched = True
 
 from shared.config import Config
 from shared.database import Database

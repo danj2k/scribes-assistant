@@ -60,7 +60,7 @@ The delivery loop polls for sessions ready to be delivered (status = COMPLETE, t
 
 py-cord 2.8.0 refactored voice reception to support Discord's DAVE (End-to-End Encryption) protocol. The refactor introduced a `SinkEventRouter` and `PacketRouter` (in `discord/voice/receive/`) that call methods and attributes the old `Sink` class never defined. The result is a cascade of `AttributeError` exceptions at every stage of the recording pipeline. This is tracked upstream as pycord issue #3139 — still unfixed on master as of 2.8.0.
 
-The workaround in `bot/main.py` monkey-patches seven missing pieces before the bot starts. Each patch is guarded with `hasattr()` (or a `_write_patched` flag) so it is a no-op if py-cord fixes this upstream or if downgrading to 2.6.3 (which has a working voice implementation):
+The workaround in `bot/main.py` monkey-patches eight missing pieces before the bot starts. Each patch is guarded with `hasattr()` (or a `_write_patched` / `_start_recording_patched` flag) so it is a no-op if py-cord fixes this upstream or if downgrading to 2.6.3 (which has a working voice implementation):
 
 1. **`Sink.__sink_listeners__`** — `SinkEventRouter.register_events()` reads `sink.__sink_listeners__` to discover event callbacks. Set to an empty list (we register no sink event listeners).
 
@@ -75,6 +75,8 @@ The workaround in `bot/main.py` monkey-patches seven missing pieces before the b
 6. **`VoiceClient.decoder`** — `WaveSink.format_audio()` reads `vc.decoder.CHANNELS`, `.SAMPLE_SIZE`, `.SAMPLING_RATE` for the WAV header. A property returning a fresh `opus.Decoder()` (which inherits these constants from `_OpusStruct`).
 
 7. **`Sink.write()`** — the DAVE `PacketRouter._do_run()` calls `self.sink.write(data, data.source)` where `data` is a `VoiceData` object, but the original `Sink.write()` (decorated by `Filters.container`) expects raw bytes. The patched version checks `hasattr(data, "pcm")` and unwraps `.pcm` (the decoded PCM byte string) before delegating to the original write. Raw bytes still pass through unchanged for backward compatibility.
+
+8. **`VoiceClient.start_recording`** — the DAVE refactor commented out the assignment of `sink._client` in `AudioReader.__init__` (reader.py line 89: `# self.sink._client = client`). `Sink.client` is a property returning `self.vc`, so without this patch `sink.client` is `None` and `PacketDecoder._process_packet` hits `assert self.sink.client` (AssertionError) on the first audio packet. The patch wraps `start_recording` to set `sink.vc = self` before calling the original, replicating the old `Sink.init(vc)` behaviour.
 
 All patches run at module import time, before `bot.run()` — early enough that `start_recording()` and the entire audio pipeline will always find the attributes present. The patches target the `Sink`, `RTPPacket`, and `VoiceClient` classes directly (not `WaveSink`), so any sink subclass will also work.
 
