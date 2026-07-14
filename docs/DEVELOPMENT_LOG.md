@@ -1073,3 +1073,34 @@ Patched `VoiceClient.start_recording` to set `sink.vc = self` before calling the
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** The sink now has a reference to the VoiceClient, so the entire decode and write pipeline can access guild members, SSRC mappings, and the connection state.
+
+---
+
+## 2026-07-14: DAVE readiness wait in /start
+
+### Problem
+
+After removing patch #9 (the `decrypt_rtp` fallback that caused `OpusError: corrupted stream`), the error persisted. The root cause was not patch #9 alone — it was that `start_recording()` was being called immediately after `voice_connect()`, before the DAVE MLS handshake had time to complete. The DAVE key exchange is asynchronous: py-cord sends an MLS key package, Discord responds with binary MLS messages, and only after `process_commit()` or `process_welcome()` succeeds does `dave_session.ready` become `True`. Until then, audio packets are DAVE-encrypted and cannot be decoded.
+
+### Investigation
+
+- Confirmed that downgrading to py-cord 2.6.3 is not an option: Discord has enforced DAVE on all non-stage voice channels since March 1, 2026, and 2.6.3 has no DAVE code at all.
+- Confirmed that `py-cord[voice]` extra only adds `PyNaCl` and `davey`, both already installed individually.
+- Evaluated disnake as an alternative: disnake has a more robust DAVE implementation for the send path, but explicitly does NOT implement DAVE decryption for incoming audio (`_setup_ratchet_for_user` returns early for non-self users). disnake also has no voice recording/reception API at all (no `start_recording`, no `Sink`). Not viable.
+- Traced the DAVE handshake flow: `reinit_dave_session()` → MLS key package → Discord binary MLS messages → `process_commit()`/`process_welcome()` → `dave_session.ready = True`.
+- User logs showed opcode 22 (`dave_execute_transition`) but NOT opcode 21 (`dave_prepare_transition`), suggesting the handshake was not completing before recording started.
+
+### Fix
+
+Added a DAVE readiness wait in `/start` (`bot/commands.py`): after `vc = await voice_channel.connect()`, poll `vc._connection.dave_session.ready` every 250ms for up to 15 seconds. If DAVE is not enabled (`dave_session is None`), skip the wait. If the handshake doesn't complete within 15 seconds, disconnect and inform the user rather than proceeding with a broken session.
+
+### Verification
+
+- 328/328 tests pass
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — added "DAVE Readiness Wait in /start" section
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** The bot now waits for the DAVE MLS handshake to complete before starting recording, preventing `OpusError: corrupted stream` from encrypted packets reaching the Opus decoder.

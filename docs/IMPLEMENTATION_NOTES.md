@@ -82,6 +82,19 @@ All patches run at module import time, before `bot.run()` — early enough that 
 
 Note: A previous patch #9 monkey-patched `PacketDecryptor.decrypt_rtp` to set `packet.decrypted_data = raw_payload` when DAVE was not ready. This was removed — it fed DAVE-encrypted bytes to the Opus decoder, causing `OpusError: corrupted stream`. The correct behaviour is to leave `decrypted_data` as `None` so the reader drops the packet until the DAVE MLS handshake completes.
 
+### DAVE Readiness Wait in /start
+
+After the WebSocket voice handshake completes, py-cord begins an asynchronous MLS (Messaging Layer Security) key exchange with Discord's voice server:
+
+1. `reinit_dave_session()` creates a `davey.DaveSession` and sends an MLS key package (opcode 24).
+2. Discord responds with binary MLS messages: external sender package, proposals, and either a commit or welcome.
+3. `process_commit()` or `process_welcome()` must succeed for the session to transition from `inactive` to `active` (`dave_session.ready = True`).
+4. Only then can `decrypt_rtp()` successfully decrypt incoming audio packets.
+
+If `start_recording()` is called before the handshake completes, the `AudioReader` receives DAVE-encrypted packets, `decrypt_rtp()` returns `None` (correctly dropping them), but the `PacketRouter` may still feed some packets to the Opus decoder, causing `OpusError: corrupted stream`.
+
+The `/start` command now polls `vc._connection.dave_session.ready` every 250ms for up to 15 seconds before calling `start_recording()`. If DAVE is not enabled on the channel (`dave_session is None`), the wait is skipped. If the handshake doesn't complete within 15 seconds, the bot disconnects and informs the user rather than proceeding with a broken session.
+
 ### AudioData.file.getbuffer()
 
 py-cord's `AudioData` stores its `BytesIO` buffer at `.file`, not directly on the object. The after-callback calls `audio_data.file.getbuffer()` (not `audio_data.getbuffer()`) when writing WAV files. `audio_data.cleanup()` is also called after writing to release the buffer.

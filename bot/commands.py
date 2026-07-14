@@ -104,6 +104,61 @@ def setup_commands(bot: commands.Bot):
         # Join voice channel and start recording
         try:
             vc = await voice_channel.connect()
+
+            # DAVE (Discord Audio/Video End-to-End Encryption) is enforced
+            # on all non-stage voice channels since March 2026.  After the
+            # WebSocket voice handshake completes, py-cord starts an
+            # asynchronous MLS key exchange: it sends a key package, Discord
+            # responds with binary MLS proposals/commits, and only once
+            # process_commit()/process_welcome() succeeds does the davey
+            # session transition to "active" (ready=True).
+            #
+            # If we call start_recording before that handshake completes,
+            # the audio reader receives DAVE-encrypted packets, cannot
+            # decrypt them, and feeds garbage to the Opus decoder — which
+            # raises OpusError("corrupted stream") and crashes the router.
+            #
+            # We poll dave_session.ready with a timeout.  If the channel
+            # is not DAVE-enabled (dave_session is None), we skip the wait.
+            DAVE_WAIT_TIMEOUT = 15  # seconds
+            DAVE_POLL_INTERVAL = 0.25  # seconds
+
+            dave_session = vc._connection.dave_session
+            if dave_session is not None:
+                bot.logger.info(
+                    f"DAVE session detected, waiting up to {DAVE_WAIT_TIMEOUT}s "
+                    f"for MLS handshake to complete..."
+                )
+                elapsed = 0.0
+                while not dave_session.ready:
+                    if elapsed >= DAVE_WAIT_TIMEOUT:
+                        bot.logger.warning(
+                            f"DAVE handshake did not complete within "
+                            f"{DAVE_WAIT_TIMEOUT}s (status={dave_session.status}), "
+                            f"proceeding anyway — audio may fail"
+                        )
+                        break
+                    await asyncio.sleep(DAVE_POLL_INTERVAL)
+                    elapsed += DAVE_POLL_INTERVAL
+
+                if dave_session.ready:
+                    bot.logger.info(
+                        f"DAVE handshake completed after {elapsed:.1f}s, "
+                        f"starting recording"
+                    )
+                else:
+                    # DAVE never became ready.  Disconnect and abort rather
+                    # than feeding encrypted packets to the Opus decoder.
+                    await vc.disconnect(force=True)
+                    db.fail_session(session_id)
+                    await interaction.followup.send(
+                        "Could not establish a secure (DAVE) connection to "
+                        "Discord's voice server within "
+                        f"{DAVE_WAIT_TIMEOUT} seconds. Please try again.",
+                        ephemeral=True,
+                    )
+                    return
+
             # Start recording — py-cord's WaveSink captures per-user WAV audio.
             # We capture the sink reference so the after-callback can access it
             # (py-cord 2.8.0 only passes the exception, not the sink, to the
