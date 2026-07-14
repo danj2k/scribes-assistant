@@ -18,9 +18,9 @@ import discord
 from discord.ext import commands
 
 # --- py-cord 2.8.0 workaround: the DAVE voice reception refactor broke
-# five methods/attributes that the Sink, RTPPacket, and VoiceClient classes
-# all expect but none define.  Without these, start_recording() and the
-# subsequent audio pipeline raise AttributeError at various stages.
+# several methods/attributes that the Sink, RTPPacket, and VoiceClient
+# classes all expect but none define.  Without these, start_recording()
+# and the subsequent audio pipeline raise AttributeError at various stages.
 # Tracked upstream as pycord issue #3139 (still unfixed on master).
 #
 # 1. Sink.__sink_listeners__ — SinkEventRouter.register_events() reads it

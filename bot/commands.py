@@ -504,6 +504,24 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                 # Still try to save whatever audio was captured
             db = bot.db
 
+            # Finalise the sink before reading audio data.  WaveSink writes
+            # the WAV header in format_audio(); without this the BytesIO
+            # holds raw PCM with no header, and downstream tools (Whisper,
+            # ffprobe) reject the file as invalid WAV.  cleanup() marks
+            # each AudioData as finished and seeks the BytesIO to 0.
+            # format_audio() writes the header via wave.open(data, "wb").
+            # Both are guarded — if they fail we still try to save whatever
+            # raw data was captured.
+            try:
+                for audio_data in sink.audio_data.values():
+                    audio_data.cleanup()
+                for user_id, audio_data in sink.audio_data.items():
+                    sink.format_audio(audio_data)
+            except Exception as e:
+                bot.logger.warning(
+                    f"Session {session_id}: sink cleanup/format_audio failed: {e}"
+                )
+
             # Resolve guild for member lookup — needed to map user IDs
             # to display names. The transcriber has no Discord API access,
             # so the bot must store speaker identity in the DB now.
@@ -520,7 +538,11 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             speaker_info = []  # (discord_user_id, speaker_name, size_bytes)
             for user_id, audio_data in sink.audio_data.items():
                 filepath = f"{rec_dir}/{user_id}.wav"
-                raw_bytes = audio_data.getbuffer()
+                # AudioData wraps a BytesIO at .file; getbuffer() lives on
+                # the BytesIO, not on AudioData itself.  Using
+                # audio_data.file.getbuffer() avoids
+                # "'AudioData' object has no attribute 'getbuffer'".
+                raw_bytes = audio_data.file.getbuffer()
                 file_specs.append((filepath, bytes(raw_bytes)))
 
                 speaker_name = str(user_id)

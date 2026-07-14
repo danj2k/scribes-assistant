@@ -80,6 +80,12 @@ The workaround in `bot/main.py` monkey-patches eight missing pieces before the b
 
 All patches run at module import time, before `bot.run()` — early enough that `start_recording()` and the entire audio pipeline will always find the attributes present. The patches target the `Sink`, `RTPPacket`, and `VoiceClient` classes directly (not `WaveSink`), so any sink subclass will also work.
 
+Note: A previous patch #9 monkey-patched `PacketDecryptor.decrypt_rtp` to set `packet.decrypted_data = raw_payload` when DAVE was not ready. This was removed — it fed DAVE-encrypted bytes to the Opus decoder, causing `OpusError: corrupted stream`. The correct behaviour is to leave `decrypted_data` as `None` so the reader drops the packet until the DAVE MLS handshake completes.
+
+### AudioData.file.getbuffer()
+
+py-cord's `AudioData` stores its `BytesIO` buffer at `.file`, not directly on the object. The after-callback calls `audio_data.file.getbuffer()` (not `audio_data.getbuffer()`) when writing WAV files. `audio_data.cleanup()` is also called after writing to release the buffer.
+
 ### libopus Docker Dependency
 
 py-cord decodes incoming Opus audio to PCM via `ctypes` at runtime, loading `libopus.so.0`. The `python:3.11-slim` base image does not include this library, so the Dockerfile installs `libopus0` via `apt-get`. Without it, `opus.Decoder()` raises `OpusNotLoaded` at the first incoming audio packet, which kills the recording session.

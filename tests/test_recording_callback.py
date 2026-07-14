@@ -63,10 +63,10 @@ class FakeAudioData:
     """Mimics py-cord's BytesIO-based audio data container."""
 
     def __init__(self, data: bytes):
-        self._buf = io.BytesIO(data)
+        self.file = io.BytesIO(data)
 
-    def getbuffer(self):
-        return self._buf.getbuffer()
+    def cleanup(self):
+        self.file.seek(0)
 
 
 class FakeSink:
@@ -74,6 +74,9 @@ class FakeSink:
 
     def __init__(self, audio_data: dict):
         self.audio_data = audio_data
+
+    def format_audio(self, audio_data):
+        pass  # no-op — real WaveSink writes WAV header here
 
 
 class FakeMember:

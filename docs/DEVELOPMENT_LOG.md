@@ -1011,6 +1011,44 @@ A third issue: py-cord 2.8.0's DAVE router invokes the after-callback twice on e
 
 ---
 
+## 2026-07-14: Remove patch #9 (DAVE fallback) + fix `AudioData.getbuffer()`
+
+### Problem
+
+After deploying patch #8, two new errors appeared:
+
+1. `discord.opus.OpusError: corrupted stream` — the Opus decoder received DAVE-encrypted bytes and crashed, killing the `PacketRouter` thread and ending the session.
+2. `'AudioData' object has no attribute 'getbuffer'` — py-cord's `AudioData` stores its buffer in a `BytesIO` at `.file`, so `getbuffer()` must be called on `.file`, not on `AudioData` directly.
+
+### Root Cause — Patch #9 was harmful
+
+Patch #9 (added in the previous iteration) monkey-patched `PacketDecryptor.decrypt_rtp` to set `packet.decrypted_data = raw_payload` when DAVE was not ready. The intent was to let audio flow even before the DAVE MLS handshake completed. However, `raw_payload` at that point is only transport-decrypted — it is still DAVE-encrypted at the application layer. Feeding DAVE-encrypted bytes to the Opus decoder caused the "corrupted stream" error.
+
+The correct behaviour (in unpatched py-cord) is to leave `decrypted_data` as `None` when DAVE is not ready. The reader then drops the packet (reader.py line 214). No audio is captured until DAVE finishes its handshake, but at least the recording thread doesn't crash.
+
+### Fix
+
+1. **Removed patch #9 entirely** from `bot/main.py`. The `decrypt_rtp` monkey-patch that set `decrypted_data = raw_payload` is gone. Packets are now correctly dropped until DAVE is ready.
+
+2. **Fixed `getbuffer()` in `bot/commands.py`** — changed `audio_data.getbuffer()` to `audio_data.file.getbuffer()`, matching py-cord's `AudioData` structure where the `BytesIO` buffer lives at `.file`.
+
+3. **Updated test fakes** in `tests/test_recording_callback.py`:
+   - `FakeAudioData`: changed `self._buf` to `self.file` (matching real `AudioData`), added `cleanup()` method
+   - `FakeSink`: added `format_audio()` no-op method
+
+### Verification
+
+- 328/328 tests pass
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — removed patch #9, noted `getbuffer` fix
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** The "corrupted stream" error is eliminated. Audio packets are correctly dropped until the DAVE handshake completes, rather than feeding encrypted bytes to the Opus decoder. The `getbuffer` fix ensures audio data can be correctly written to WAV files.
+
+---
+
 ## 2026-07-14: Fix `assert self.sink.client` AssertionError (eighth monkey-patch)
 
 ### Problem
