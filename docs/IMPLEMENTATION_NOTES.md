@@ -56,6 +56,18 @@ SQLite supports WAL mode for concurrent reads. Both the bot and transcriber acce
 
 The delivery loop polls for sessions ready to be delivered (status = COMPLETE, transcript_path set, thread_id NULL). It previously accessed the database's private `_cursor()` context manager directly, coupling it to the database's internal implementation. It now calls the public `Database.get_sessions_for_delivery()` method instead, which returns a list of `{"id": session_id}` dicts ordered by `ended_at`. The delivery loop has no direct SQL access and no unnecessary commit after the SELECT query.
 
+### py-cord 2.8.0 Sink Monkey-Patch
+
+py-cord 2.8.0 refactored voice reception to add a `SinkEventRouter` (in `discord/voice/receive/router.py`) that calls `sink.walk_children()` and accesses `sink.__sink_listeners__`. However, the `Sink` base class in `discord/sinks/core.py` was never updated to define either attribute. Without a workaround, `vc.start_recording()` raises `AttributeError: 'WaveSink' object has no attribute '__sink_listeners__'` immediately — the `/start` command fails before any audio is captured.
+
+This is a known py-cord bug (issue #3139) with no fix on master as of 2.8.0.
+
+The workaround in `bot/main.py` monkey-patches the `Sink` class before the bot starts:
+- `Sink.__sink_listeners__ = []` — empty list because we register no sink event listeners
+- `Sink.walk_children()` — returns an empty iterator because WaveSink has no child sinks
+
+Both patches are guarded with `if not hasattr(...)` so they are no-ops if py-cord fixes this upstream or if downgrading to 2.6.3 (which has a working voice implementation). The patch runs at module import time, before `bot.run()` — early enough that `start_recording()` will always find the attributes present.
+
 ### py-cord Recording After-Callback
 
 py-cord 2.8.0's `start_recording(sink, callback)` stores `callback` as an `AudioReader.after` callback. When `stop_recording()` is called, py-cord invokes `after(exc)` **synchronously** from the voice client's thread — it receives the exception (or None), NOT the sink. The callback must be a regular (sync) callable, not a coroutine function.

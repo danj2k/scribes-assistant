@@ -17,6 +17,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import discord
 from discord.ext import commands
 
+# --- py-cord 2.8.0 workaround: Sink is missing __sink_listeners__ and
+# walk_children, which the SinkEventRouter (voice/receive/router.py)
+# expects.  Without these, start_recording() raises AttributeError
+# immediately.  This is a known py-cord 2.8.0 bug — the voice reception
+# refactor added SinkEventRouter but never updated the Sink class.
+# walk_children returns an empty iterator because WaveSink (the only
+# sink we use) has no child sinks.  __sink_listeners__ is an empty list
+# because we don't register any sink event listeners.
+from discord.sinks import Sink as _Sink
+
+if not hasattr(_Sink, "__sink_listeners__"):
+    _Sink.__sink_listeners__ = []
+
+if not hasattr(_Sink, "walk_children"):
+    def _walk_children(self):
+        return iter(())
+    _Sink.walk_children = _walk_children
+
 from shared.config import Config
 from shared.database import Database
 from shared.lexicon import Lexicon

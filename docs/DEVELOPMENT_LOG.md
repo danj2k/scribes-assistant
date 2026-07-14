@@ -905,3 +905,28 @@ The handler is registered in `setup_hook()` (not at module level) because it nee
 - `tests/test_healthcheck.py` (4 tests): Transcriber healthcheck — fresh heartbeat, missing heartbeat, stale heartbeat, boundary case
 
 **Impact:** 328/328 tests pass (0 warnings).
+
+## 2025-07-14 — Fix: py-cord 2.8.0 Sink `__sink_listeners__` AttributeError
+
+### Problem
+
+When issuing `/start` on the deployed bot, `vc.start_recording()` raised `AttributeError: 'WaveSink' object has no attribute '__sink_listeners__'` before any audio was captured. The `/start` command failed immediately.
+
+### Root Cause
+
+py-cord 2.8.0 refactored voice reception to add a `SinkEventRouter` (in `discord/voice/receive/router.py`). The router's `__init__` → `register_events()` calls `sink.walk_children()` and accesses `sink.__sink_listeners__`. However, the `Sink` base class in `discord/sinks/core.py` was never updated to define either attribute. This is a known py-cord bug (issue #3139), unfixed on master as of 2.8.0.
+
+### Fix
+
+Monkey-patched the `Sink` class in `bot/main.py` at module import time, before `bot.run()`:
+- `Sink.__sink_listeners__ = []` — empty list because we register no sink event listeners
+- `Sink.walk_children()` — returns an empty iterator because WaveSink (the only sink we use) has no child sinks
+
+Both patches are guarded with `if not hasattr(...)` so they are no-ops if py-cord fixes this upstream or if downgrading to 2.6.3.
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — new section "py-cord 2.8.0 Sink Monkey-Patch"
+- `docs/KNOWN_ISSUES.md` — added to Technical Debt with upstream tracking reference
+
+**Impact:** 328/328 tests pass (0 warnings). No new tests added — the fix is a third-party library workaround, not application logic.

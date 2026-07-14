@@ -8,7 +8,7 @@
 
 ## Technical Debt
 
-- *(None — all known issues have been addressed)*
+- **py-cord 2.8.0 voice reception bug**: `SinkEventRouter` expects `__sink_listeners__` and `walk_children()` on the `Sink` class, but neither is defined. Worked around with a monkey-patch in `bot/main.py` (see IMPLEMENTATION_NOTES.md). Remove the patch when py-cord fixes this upstream (tracked: pycord issue #3139).
 
 ## Future Considerations
 
