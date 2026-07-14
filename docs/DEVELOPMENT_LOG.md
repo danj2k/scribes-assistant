@@ -930,3 +930,49 @@ Both patches are guarded with `if not hasattr(...)` so they are no-ops if py-cor
 - `docs/KNOWN_ISSUES.md` — added to Technical Debt with upstream tracking reference
 
 **Impact:** 328/328 tests pass (0 warnings). No new tests added — the fix is a third-party library workaround, not application logic.
+
+## 2025-07-14 — Fix: py-cord 2.8.0 DAVE Voice Reception — Five Additional Missing Attributes
+
+### Problem
+
+After the initial `__sink_listeners__` / `walk_children` patch was deployed and tested, `/start` triggered a cascade of further `AttributeError` exceptions in the DAVE voice reception pipeline:
+
+1. `'RTPPacket' object has no attribute 'type'` — `reader.py` line 188, logging unexpected RTCP packets
+2. `'WaveSink' object has no attribute 'is_opus'` — `opus.py` line 581, `PacketDecoder.__init__` deciding whether to create a Decoder
+3. `'WaveSink' object has no attribute 'is_opus'` (same root cause, second call site in `_process_packet`)
+4. `WaveSink.format_audio()` would hit `vc.recording` (missing property) and `vc.decoder` (missing property) — predicted from source analysis, not yet observed in logs
+5. `Sink.write()` would receive `VoiceData` objects instead of raw bytes — predicted from `PacketRouter._do_run()` source
+
+Error #2 was fatal: it triggered `stop_recording()` via the router's exception handler, ending the session before any audio was captured.
+
+### Root Cause
+
+The DAVE refactor broke more of the `Sink` / `RTPPacket` / `VoiceClient` interface than just `__sink_listeners__` and `walk_children`. Seven attributes/methods are missing in total across the three classes. The original patch only addressed the first two; the remaining five were discovered by source analysis of `reader.py`, `router.py`, `opus.py`, and `sinks/wave.py` in py-cord 2.8.0.
+
+### Fix
+
+Expanded the monkey-patch in `bot/main.py` to cover all seven missing pieces (the original two plus five new ones):
+
+1. `Sink.__sink_listeners__ = []` (existing — unchanged)
+2. `Sink.walk_children()` returning empty iterator (existing — unchanged)
+3. `Sink.is_opus()` returning `False` — WaveSink wants PCM, so a Decoder is created
+4. `RTPPacket.type = None` — same default as the `RTCPPacket` base class
+5. `VoiceClient.recording` — property delegating to `is_recording()`
+6. `VoiceClient.decoder` — property returning `opus.Decoder()` (inherits CHANNELS, SAMPLE_SIZE, SAMPLING_RATE from `_OpusStruct`)
+7. `Sink.write()` — wraps the original to unwrap `VoiceData.pcm` before delegating, so `PacketRouter._do_run()` can pass `VoiceData` objects
+
+All patches are guarded with `hasattr()` (or a `_write_patched` flag) so they are no-ops if py-cord fixes this upstream or if downgrading to 2.6.3.
+
+### Verification
+
+- 328/328 existing tests pass
+- 8 unit tests verifying each patch (Sink attributes, RTPPacket.type, VoiceClient properties, Sink.write VoiceData unwrapping, backward compat with raw bytes)
+- 6-step integration test simulating the full DAVE pipeline: SinkEventRouter init → PacketDecoder init → RTPPacket logging → WaveSink.format_audio → Sink.write(VoiceData) → Sink.write(raw_bytes)
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — replaced "py-cord 2.8.0 Sink Monkey-Patch" section with expanded "py-cord 2.8.0 DAVE Voice Reception Monkey-Patches" documenting all seven patches
+- `docs/KNOWN_ISSUES.md` — updated Technical Debt entry to list all seven missing attributes
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** 328/328 tests pass (0 warnings). The DAVE voice reception pipeline is now fully patched — `/start` should proceed through recording without `AttributeError`.

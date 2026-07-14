@@ -8,7 +8,7 @@
 
 ## Technical Debt
 
-- **py-cord 2.8.0 voice reception bug**: `SinkEventRouter` expects `__sink_listeners__` and `walk_children()` on the `Sink` class, but neither is defined. Worked around with a monkey-patch in `bot/main.py` (see IMPLEMENTATION_NOTES.md). Remove the patch when py-cord fixes this upstream (tracked: pycord issue #3139).
+- **py-cord 2.8.0 DAVE voice reception bug**: The DAVE (End-to-End Encryption) refactor introduced a `SinkEventRouter` and `PacketRouter` that expect seven attributes/methods missing from `Sink`, `RTPPacket`, and `VoiceClient` (`__sink_listeners__`, `walk_children`, `is_opus`, `RTPPacket.type`, `VoiceClient.recording`, `VoiceClient.decoder`, `Sink.write` VoiceData unwrapping). Worked around with seven monkey-patches in `bot/main.py` (see IMPLEMENTATION_NOTES.md). Remove the patches when py-cord fixes this upstream (tracked: pycord issue #3139).
 
 ## Future Considerations
 

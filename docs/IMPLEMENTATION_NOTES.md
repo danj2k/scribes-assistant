@@ -56,17 +56,27 @@ SQLite supports WAL mode for concurrent reads. Both the bot and transcriber acce
 
 The delivery loop polls for sessions ready to be delivered (status = COMPLETE, transcript_path set, thread_id NULL). It previously accessed the database's private `_cursor()` context manager directly, coupling it to the database's internal implementation. It now calls the public `Database.get_sessions_for_delivery()` method instead, which returns a list of `{"id": session_id}` dicts ordered by `ended_at`. The delivery loop has no direct SQL access and no unnecessary commit after the SELECT query.
 
-### py-cord 2.8.0 Sink Monkey-Patch
+### py-cord 2.8.0 DAVE Voice Reception Monkey-Patches
 
-py-cord 2.8.0 refactored voice reception to add a `SinkEventRouter` (in `discord/voice/receive/router.py`) that calls `sink.walk_children()` and accesses `sink.__sink_listeners__`. However, the `Sink` base class in `discord/sinks/core.py` was never updated to define either attribute. Without a workaround, `vc.start_recording()` raises `AttributeError: 'WaveSink' object has no attribute '__sink_listeners__'` immediately — the `/start` command fails before any audio is captured.
+py-cord 2.8.0 refactored voice reception to support Discord's DAVE (End-to-End Encryption) protocol. The refactor introduced a `SinkEventRouter` and `PacketRouter` (in `discord/voice/receive/`) that call methods and attributes the old `Sink` class never defined. The result is a cascade of `AttributeError` exceptions at every stage of the recording pipeline. This is tracked upstream as pycord issue #3139 — still unfixed on master as of 2.8.0.
 
-This is a known py-cord bug (issue #3139) with no fix on master as of 2.8.0.
+The workaround in `bot/main.py` monkey-patches seven missing pieces before the bot starts. Each patch is guarded with `hasattr()` (or a `_write_patched` flag) so it is a no-op if py-cord fixes this upstream or if downgrading to 2.6.3 (which has a working voice implementation):
 
-The workaround in `bot/main.py` monkey-patches the `Sink` class before the bot starts:
-- `Sink.__sink_listeners__ = []` — empty list because we register no sink event listeners
-- `Sink.walk_children()` — returns an empty iterator because WaveSink has no child sinks
+1. **`Sink.__sink_listeners__`** — `SinkEventRouter.register_events()` reads `sink.__sink_listeners__` to discover event callbacks. Set to an empty list (we register no sink event listeners).
 
-Both patches are guarded with `if not hasattr(...)` so they are no-ops if py-cord fixes this upstream or if downgrading to 2.6.3 (which has a working voice implementation). The patch runs at module import time, before `bot.run()` — early enough that `start_recording()` will always find the attributes present.
+2. **`Sink.walk_children()`** — `SinkEventRouter` iterates `sink.walk_children()` to find child sinks. Returns an empty iterator (WaveSink has no child sinks).
+
+3. **`Sink.is_opus()`** — `PacketDecoder.__init__()` and `_process_packet()` call `self.sink.is_opus()` to decide whether to create an Opus `Decoder`. Returns `False` (WaveSink wants PCM, so decoding is required).
+
+4. **`RTPPacket.type`** — `reader.py` logs `packet.type` for unexpected RTCP packets. `RTPPacket` lacks the `type` class attribute that `RTCPPacket` defines. Set to `None` (same default as the `RTCPPacket` base).
+
+5. **`VoiceClient.recording`** — `WaveSink.format_audio()` checks `vc.recording` to decide whether to write a WAV header. A property delegating to `is_recording()` (which already exists on `VoiceClient`).
+
+6. **`VoiceClient.decoder`** — `WaveSink.format_audio()` reads `vc.decoder.CHANNELS`, `.SAMPLE_SIZE`, `.SAMPLING_RATE` for the WAV header. A property returning a fresh `opus.Decoder()` (which inherits these constants from `_OpusStruct`).
+
+7. **`Sink.write()`** — the DAVE `PacketRouter._do_run()` calls `self.sink.write(data, data.source)` where `data` is a `VoiceData` object, but the original `Sink.write()` (decorated by `Filters.container`) expects raw bytes. The patched version checks `hasattr(data, "pcm")` and unwraps `.pcm` (the decoded PCM byte string) before delegating to the original write. Raw bytes still pass through unchanged for backward compatibility.
+
+All patches run at module import time, before `bot.run()` — early enough that `start_recording()` and the entire audio pipeline will always find the attributes present. The patches target the `Sink`, `RTPPacket`, and `VoiceClient` classes directly (not `WaveSink`), so any sink subclass will also work.
 
 ### py-cord Recording After-Callback
 
