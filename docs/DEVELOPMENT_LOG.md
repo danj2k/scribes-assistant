@@ -976,3 +976,35 @@ All patches are guarded with `hasattr()` (or a `_write_patched` flag) so they ar
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** 328/328 tests pass (0 warnings). The DAVE voice reception pipeline is now fully patched — `/start` should proceed through recording without `AttributeError`.
+
+## 2026-07-14 — Fix OpusNotLoaded + auto-leave on failed session
+
+### Problem
+
+After deploying the seven monkey-patches, `/start` still failed with a new error: `discord.opus.OpusNotLoaded`. The root cause: `python:3.11-slim` does not include `libopus0`, the shared library that py-cord loads via `ctypes` to decode incoming Opus audio to PCM. When `is_opus()` returns `False` (WaveSink wants PCM), py-cord creates an `opus.Decoder()`, which calls `_OpusStruct.get_opus_version()` — that loads `libopus.so.0` via ctypes and raises `OpusNotLoaded` if it's missing. This was the fatal error that triggered `stop_recording()` and killed the session.
+
+Additionally, when a recording session failed (for any reason), the bot stayed in the voice channel and gave no feedback to the user. The `/start` command had already replied "Recording started!", so the user saw that followed by silence, with the bot still sitting in the channel. The failure path only logged errors to `docker logs` — nothing was sent to Discord.
+
+A third issue: py-cord 2.8.0's DAVE router invokes the after-callback twice on error (once from the error handler, once from `stop_recording()`), causing duplicate "recording stopped with error" log lines and double audio processing.
+
+### Changes
+
+1. **`bot/Dockerfile`** — Added `apt-get install libopus0` to the bot image. The slim base image omits it; py-cord needs it at runtime for Opus decoding.
+
+2. **`bot/commands.py`** — Three improvements to `make_recording_after_callback()`:
+   - **Double-invocation guard** — `_processing_started` flag prevents the async processing coroutine from running twice when py-cord calls the after-callback multiple times.
+   - **Auto-disconnect** — the `finally` block now disconnects the bot from the voice channel when the recording fails (`exc is not None` or `audio_count == 0`). This is wrapped in `try/except` so failures in cleanup don't prevent the future from resolving.
+   - **User notification** — sends a message to the text channel where `/start` was issued, informing the user that the session failed and the bot has left the voice channel. Also guarded.
+
+### Verification
+
+- 328/328 tests pass
+- Existing tests for the after-callback (future resolution, error handling, empty recordings) still pass with the new auto-disconnect and notification code guarded behind `try/except`
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — added libopus dependency note and auto-leave behaviour
+- `docs/KNOWN_ISSUES.md` — noted libopus as a Docker dependency
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** The bot now has the native Opus library it needs to decode audio. On failed sessions, it leaves the voice channel and tells the user instead of sitting silently.

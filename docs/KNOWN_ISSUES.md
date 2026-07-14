@@ -9,6 +9,7 @@
 ## Technical Debt
 
 - **py-cord 2.8.0 DAVE voice reception bug**: The DAVE (End-to-End Encryption) refactor introduced a `SinkEventRouter` and `PacketRouter` that expect seven attributes/methods missing from `Sink`, `RTPPacket`, and `VoiceClient` (`__sink_listeners__`, `walk_children`, `is_opus`, `RTPPacket.type`, `VoiceClient.recording`, `VoiceClient.decoder`, `Sink.write` VoiceData unwrapping). Worked around with seven monkey-patches in `bot/main.py` (see IMPLEMENTATION_NOTES.md). Remove the patches when py-cord fixes this upstream (tracked: pycord issue #3139).
+- **libopus Docker dependency**: The bot Dockerfile installs `libopus0` via apt-get because `python:3.11-slim` omits it. py-cord loads this shared library via ctypes at runtime for Opus decoding. If the package is removed or the base image changes, recording will fail with `OpusNotLoaded`.
 
 ## Future Considerations
 

@@ -472,6 +472,10 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     :func:`asyncio.run_coroutine_threadsafe` to schedule the async audio
     processing on the bot's event loop.
 
+    py-cord 2.8.0 may invoke the after-callback more than once (once from the
+    DAVE router's error path and once from stop_recording).  A guard flag
+    ensures we only process audio and signal the future once.
+
     Returns ``(after_cb, future)`` where ``after_cb`` is the sync callback to
     pass to ``vc.start_recording()`` and ``future`` is an
     :class:`asyncio.Future` that resolves once audio processing is complete.
@@ -484,9 +488,13 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     # The result is the number of audio files saved (0 means empty recording).
     # Set when audio processing finishes (or errors out).
     done_future: asyncio.Future = loop.create_future()
+    # py-cord 2.8.0 may call after_cb twice — guard against double processing.
+    _processing_started = False
 
     async def _process_recording(exc: Exception | None):
         """Process recorded audio and save to disk."""
+        nonlocal _processing_started
+        _processing_started = True
         audio_count = 0
         try:
             if exc is not None:
@@ -560,8 +568,43 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                 db.fail_session(session_id)
         except Exception as e:
             bot.logger.error(f"Session {session_id}: recording callback failed: {e}")
-            raise
+            # Ensure session is marked as failed if the callback itself blew up
+            db = bot.db
+            db.fail_session(session_id)
+            audio_count = 0
         finally:
+            # If the recording failed with an error (exc is not None) or
+            # no audio was captured, disconnect from the voice channel and
+            # notify the user. The /start command already told the user
+            # "Recording started!" — without this they'd see that message
+            # followed by silence, with the bot still sitting in the voice
+            # channel.
+            if exc is not None or audio_count == 0:
+                try:
+                    guild = bot.get_guild(int(guild_id)) if guild_id else None
+                    if guild and guild.voice_client and guild.voice_client.is_connected():
+                        try:
+                            if guild.voice_client.is_recording():
+                                guild.voice_client.stop_recording()
+                        except Exception:
+                            pass
+                        await guild.voice_client.disconnect()
+                        bot.logger.info(
+                            f"Session {session_id}: auto-disconnected from voice "
+                            f"channel after failed recording"
+                        )
+                    notify_channel = bot.get_channel(int(channel_id)) if channel_id else None
+                    if notify_channel:
+                        await notify_channel.send(
+                            f"Recording session `{session_id}` failed — "
+                            f"no audio was captured. The bot has left the voice channel."
+                        )
+                except Exception:
+                    bot.logger.warning(
+                        f"Session {session_id}: failed to auto-disconnect "
+                        f"or notify after failed recording"
+                    )
+
             # Signal the future regardless of success/failure so /stop
             # doesn't hang forever waiting. The result is the audio file
             # count so /stop can distinguish empty recordings from real ones.
@@ -573,7 +616,14 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
 
         Schedules async audio processing on the event loop. This may be
         called from a non-loop thread, hence run_coroutine_threadsafe.
+
+        py-cord 2.8.0 may invoke this callback more than once (the DAVE
+        router calls stop_recording() on error, which fires the callback
+        again). The _processing_started guard ensures we only process
+        audio once.
         """
+        if _processing_started:
+            return
         asyncio.run_coroutine_threadsafe(_process_recording(exc), loop)
 
     return after_cb, done_future

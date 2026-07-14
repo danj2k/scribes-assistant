@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# Install libopus — py-cord loads it via ctypes at runtime to decode
+# incoming Opus audio to PCM for WaveSink. The slim image omits it.
+RUN apt-get update && apt-get install -y --no-install-recommends libopus0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install shared package first (for caching)
 WORKDIR /app
 COPY shared/ /app/shared/

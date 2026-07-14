@@ -78,6 +78,16 @@ The workaround in `bot/main.py` monkey-patches seven missing pieces before the b
 
 All patches run at module import time, before `bot.run()` — early enough that `start_recording()` and the entire audio pipeline will always find the attributes present. The patches target the `Sink`, `RTPPacket`, and `VoiceClient` classes directly (not `WaveSink`), so any sink subclass will also work.
 
+### libopus Docker Dependency
+
+py-cord decodes incoming Opus audio to PCM via `ctypes` at runtime, loading `libopus.so.0`. The `python:3.11-slim` base image does not include this library, so the Dockerfile installs `libopus0` via `apt-get`. Without it, `opus.Decoder()` raises `OpusNotLoaded` at the first incoming audio packet, which kills the recording session.
+
+### Auto-Disconnect on Failed Recording
+
+When a recording session fails (error during recording or zero audio captured), the after-callback's `finally` block disconnects the bot from the voice channel and sends a notification to the text channel where `/start` was issued. Without this, the bot would remain in the voice channel after a failed session with no user feedback — the user would see "Recording started!" followed by silence. The auto-disconnect and notification code is wrapped in `try/except` so cleanup failures don't prevent the processing future from resolving (which would hang `/stop`).
+
+A `_processing_started` flag guards against py-cord 2.8.0's DAVE router invoking the after-callback twice on error (once from the error handler, once from `stop_recording()`), which previously caused duplicate log lines and double audio file writes.
+
 ### py-cord Recording After-Callback
 
 py-cord 2.8.0's `start_recording(sink, callback)` stores `callback` as an `AudioReader.after` callback. When `stop_recording()` is called, py-cord invokes `after(exc)` **synchronously** from the voice client's thread — it receives the exception (or None), NOT the sink. The callback must be a regular (sync) callable, not a coroutine function.
