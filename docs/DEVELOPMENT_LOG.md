@@ -1339,3 +1339,13 @@ After deploying the transcriber hotwords fix, the transcriber produced output bu
 **Tests:** 336 pass, no new test needed (message text is informational, not behavioural logic).
 
 **Documentation:** `docs/DEVELOPMENT_LOG.md` — this entry.
+
+### Fix #16: Transcript delivered as file attachment, not inline text
+
+**Problem:** Transcripts were posted as inline message content in Discord threads, split across multiple messages for long transcripts. For real 3-hour D&D sessions, this would produce dozens of messages and hundreds of thousands of characters — unmanageable in a thread and impossible to download. Discord renders long inline text in a sidebar rather than offering a download.
+
+**Fix:** `bot/delivery.py` `_deliver()` now attaches the transcript as a `.txt` file via `discord.File(fp=io.BytesIO(...), filename=f"{session_id}.txt")`. The thread contains a single message with the file attachment, which Discord renders as a downloadable file. The old inline splitting logic (split at 1900-char boundaries) has been removed.
+
+**Tests:** 336 pass. Replaced `test_deliver_splits_long_transcript` with `test_deliver_attaches_transcript_file` — asserts `file` kwarg is passed to `thread.send()` and `discord.File` is constructed with the correct filename.
+
+**Documentation:** `docs/IMPLEMENTATION_NOTES.md` — Added "Transcript Delivery as File Attachment" section.

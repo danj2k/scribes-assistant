@@ -276,15 +276,17 @@ class TestDeliveryLoopDeliver:
         assert kwargs["type"] is not None
 
     @pytest.mark.asyncio
-    async def test_deliver_splits_long_transcript(self, tmp_path):
-        """Transcripts over 2000 chars are split into multiple messages."""
+    async def test_deliver_attaches_transcript_file(self, tmp_path):
+        """Transcript is attached as a .txt file, not posted inline.
+
+        A 3-hour session produces tens of thousands of characters — far too
+        large for Discord's 2000-char message limit.  A file attachment lets
+        the user download or view it cleanly regardless of length.
+        """
         loop, bot, db, logger = _make_delivery_loop()
 
-        # Write a transcript longer than 2000 chars
-        long_line = "x" * 100
-        long_text = "\n".join([long_line] * 30)  # ~3030 chars
         transcript_file = tmp_path / "transcript.txt"
-        transcript_file.write_text(long_text)
+        transcript_file.write_text("Hello world")
 
         session = {
             "id": "s1",
@@ -300,8 +302,17 @@ class TestDeliveryLoopDeliver:
 
         await loop._deliver(session)
 
-        # Should have sent multiple messages
-        assert mock_thread.send.await_count > 1
+        # Must send a message with a file attachment
+        mock_thread.send.assert_awaited_once()
+        _, kwargs = mock_thread.send.call_args
+        assert "file" in kwargs, "transcript must be sent as a file attachment"
+
+        # Verify discord.File was constructed with the right filename.
+        # discord was mocked during import, so access it via the function's
+        # globals (the module-level discord reference from import time).
+        delivery_discord = DeliveryLoop._deliver.__globals__["discord"]
+        file_kwargs = delivery_discord.File.call_args.kwargs
+        assert file_kwargs["filename"] == "s1.txt"
 
     @pytest.mark.asyncio
     async def test_deliver_uses_config_channel_when_set(self, tmp_path):

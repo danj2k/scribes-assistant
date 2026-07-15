@@ -5,6 +5,7 @@ for new transcripts ready to deliver.
 """
 
 import asyncio
+import io
 from pathlib import Path
 
 import discord
@@ -116,21 +117,18 @@ class DeliveryLoop:
                 type=discord.ChannelType.public_thread,
             )
             
-            # Send the transcript in parts if needed (Discord 2000 char limit)
-            if len(transcript_text) <= 2000:
-                await thread.send(f"```\n{transcript_text}\n```")
-            else:
-                # Split into chunks
-                lines = transcript_text.split("\n")
-                chunk = ""
-                for line in lines:
-                    if len(chunk) + len(line) + 1 > 1900:
-                        await thread.send(f"```\n{chunk}\n```")
-                        chunk = line + "\n"
-                    else:
-                        chunk += line + "\n"
-                if chunk:
-                    await thread.send(f"```\n{chunk}\n```")
+            # Attach the transcript as a downloadable .txt file.
+            # A 3-hour session can easily produce tens of thousands of
+            # characters — far too large for inline Discord messages.
+            # A file attachment lets the user download or view it cleanly.
+            file = discord.File(
+                fp=io.BytesIO(transcript_text.encode("utf-8")),
+                filename=f"{session_id}.txt",
+            )
+            await thread.send(
+                content=f"Transcript for session **{session_id}**",
+                file=file,
+            )
             
             # Update database with thread ID
             self.db.set_thread_id(session_id, str(thread.id))

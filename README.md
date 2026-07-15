@@ -124,7 +124,7 @@ Once the bot is set up on your Discord server, join a voice channel and use the 
 1. **Start a session:** Join a voice channel and type `/start`. The bot joins and begins recording.
 2. **Play your game:** The bot records in the background. You don't need to do anything.
 3. **End the session:** Type `/stop`, or simply disconnect from the voice channel. If the bot is the only one left, it will automatically end the session after a short idle period, save the recording, and disconnect. Either way, the audio is queued for transcription.
-4. **Wait for the transcript:** Transcription takes a few minutes (depending on session length). The bot creates a thread in the channel where you issued the command and posts the transcript there, keeping each session's output organised.
+4. **Wait for the transcript:** Transcription takes a few minutes (depending on session length). The bot creates a thread in the channel where you issued the command (or a dedicated transcript channel if configured) and attaches the transcript as a downloadable `.txt` file, keeping each session's output organised.
 5. **Check status:** Use `/status` to see if transcription is in progress or complete.
 
 ### Lexicon

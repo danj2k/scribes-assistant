@@ -68,6 +68,10 @@ py-cord's `TextChannel.create_thread()` defaults `type` to `ChannelType.private_
 
 We must explicitly pass `type=discord.ChannelType.public_thread` to make the thread visible to all users in the channel.
 
+### Transcript Delivery as File Attachment
+
+Transcripts are delivered as `.txt` file attachments in a Discord thread, not as inline message content. A 3-hour D&D session can easily produce tens of thousands of characters of transcript text — far exceeding Discord's 2000-character per-message limit. Posting inline would require splitting across many messages, cluttering the thread and making the transcript difficult to read or download. A file attachment (`discord.File` wrapping a `BytesIO` of UTF-8 text, named `{session_id}.txt`) lets users download or view the transcript cleanly regardless of length.
+
 ### py-cord PR #3159 — DAVE Voice Reception Support
 
 py-cord 2.8.0 refactored voice reception to support Discord's DAVE (End-to-End Encryption) protocol, but the DAVE decryption for incoming audio was never implemented — pycord itself emitted `RuntimeWarning: Voice reception is currently broken due to Discord's DAVE protocol` (router.py:124, issue #3139). This caused `OpusError: corrupted stream` because DAVE-encrypted bytes were fed directly to the Opus decoder.
@@ -365,7 +369,7 @@ The test suite is curated to test what IS there, not what ISN'T. Tests that asse
 
 **Coverage:**
 
-- `bot/delivery.py` (DeliveryLoop) — covered by `tests/test_delivery.py` (17 tests): constructor, start/idempotency, poll behaviour (complete sessions, no transcript path, already-delivered, empty list), delivery (thread creation, long transcript splitting, followup message), run loop (poll-then-sleep, shutdown event, exception handling), and stop() (cancels running task, no-op when not running, no-op when task already done, logs message).
+- `bot/delivery.py` (DeliveryLoop) — covered by `tests/test_delivery.py` (19 tests): constructor, start/idempotency, poll behaviour (complete sessions, no transcript path, already-delivered, empty list), delivery (thread creation, public thread type, file attachment, configured channel, channel-not-found, missing transcript file), run loop (poll-then-sleep, shutdown event, exception handling), and stop() (cancels running task, no-op when not running, no-op when task already done, logs message).
 - `bot/voice.py` (idle timeout) — covered by `tests/test_voice.py` (9 tests): on_voice_state_update (bot members ignored, no voice client ignored, starts timer when alone, cancels on user join) and _idle_timeout (timeout ends session and disconnects, no active session just disconnects, cancellation is silent, task cleanup, not-recording state doesn't stop the bot).
 - `shared/lexicon.py` — covered by `tests/test_lexicon.py` and `tests/test_lexicon_integration.py` (positive tests only: correction pipeline, tie-breaking, case preservation, tokenisation, hotwords format).
 - `shared/database.py` — covered by `tests/test_database.py` (session lifecycle, file registration, segment storage, fail_session, queued sessions without files, single-session enforcement).
