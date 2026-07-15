@@ -160,14 +160,17 @@ def setup_commands(bot: commands.Bot):
                     return
 
             # Start recording — py-cord's WaveSink captures per-user WAV audio.
-            # We capture the sink reference so the after-callback can access it
-            # (py-cord 2.8.0 only passes the exception, not the sink, to the
-            # after callback).
+            # We pass a dummy positional arg (None) because PR #3159's
+            # AudioReader._stop() only fires the callback if self.args is
+            # truthy: ``if self.after and self.args:``.  Without any *args,
+            # self.args is an empty tuple (falsy) and the callback never runs.
+            # The dummy arg is harmless — it's forwarded as *args to
+            # after_cb, which ignores them.
             sink = discord.sinks.WaveSink()
             after_cb, recording_done = make_recording_after_callback(
                 bot, session_id, guild_id, str(interaction.channel_id), sink,
             )
-            vc.start_recording(sink, after_cb)
+            vc.start_recording(sink, after_cb, None)
         except Exception as e:
             # fail_session() sets BOTH status=FAILED and ended_at. Using
             # update_session_status() here would leave ended_at=NULL, causing
@@ -249,15 +252,20 @@ def setup_commands(bot: commands.Bot):
 
         # If the callback detected zero audio files (nobody spoke), it has
         # already called fail_session(). Inform the user and don't queue
-        # for transcription.
-        if audio_count == 0:
+        # for transcription.  audio_count is None when the callback timed
+        # out entirely (never fired) — treat that the same as zero audio.
+        if not audio_count:
+            if audio_count is None:
+                # Callback never fired — ensure the session is marked failed
+                # so it doesn't linger as ACTIVE.
+                db.fail_session(session_id)
             await interaction.followup.send(
                 f"Recording stopped for session `{session_id}`, but no audio was captured "
-                "(nobody spoke). The session has been marked as failed — "
-                "no transcript will be generated.",
+                "(nobody spoke, or the recording callback did not fire). "
+                "The session has been marked as failed — no transcript will be generated.",
                 ephemeral=True,
             )
-            bot.logger.info(f"Session {session_id}: stopped with no audio, marked as failed")
+            bot.logger.info(f"Session {session_id}: stopped with no audio (count={audio_count}), marked as failed")
             return
 
         # Mark session as queued for transcription
@@ -527,18 +535,19 @@ def _write_audio_files_sync(file_specs):
 def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     """Create a py-cord after-callback for recording completion.
 
-    py-cord 2.8.0's ``after`` callback is a synchronous callable that receives
-    a single ``exception`` argument — it does **not** pass the sink.  We close
-    over the sink here so that the async processing logic can access it.
+    PR #3159's ``after`` callback is a synchronous callable that receives
+    the sink as its first positional argument (``after(sink, *args)``),
+    not an exception.  We close over the sink here so that the async
+    processing logic can access it.
 
     The callback may be invoked from a non-event-loop thread (py-cord's socket
     listener or the AudioReader._stop() path), so we use
     :func:`asyncio.run_coroutine_threadsafe` to schedule the async audio
     processing on the bot's event loop.
 
-    py-cord 2.8.0 may invoke the after-callback more than once (once from the
-    DAVE router's error path and once from stop_recording).  A guard flag
-    ensures we only process audio and signal the future once.
+    PR #3159's _stop() only fires the callback if ``self.after and self.args``
+    are both truthy — the call site must pass at least one positional arg
+    to start_recording() so self.args is non-empty.
 
     Returns ``(after_cb, future)`` where ``after_cb`` is the sync callback to
     pass to ``vc.start_recording()`` and ``future`` is an
@@ -568,24 +577,11 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                 # Still try to save whatever audio was captured
             db = bot.db
 
-            # Finalise the sink before reading audio data.  WaveSink writes
-            # the WAV header in format_audio(); without this the BytesIO
-            # holds raw PCM with no header, and downstream tools (Whisper,
-            # ffprobe) reject the file as invalid WAV.  cleanup() marks
-            # each AudioData as finished and seeks the BytesIO to 0.
-            # format_audio() writes the header via wave.open(data, "wb").
-            # Both are guarded — if they fail we still try to save whatever
-            # raw data was captured.
-            try:
-                for audio_data in sink.audio_data.values():
-                    audio_data.cleanup()
-                for user_id, audio_data in sink.audio_data.items():
-                    sink.format_audio(audio_data)
-            except Exception as e:
-                bot.logger.warning(
-                    f"Session {session_id}: sink cleanup/format_audio failed: {e}"
-                )
-
+            # PR #3159's AudioReader._stop() calls sink.cleanup() after the
+            # callback — this calls audio_data.cleanup() + format_audio()
+            # for each AudioData, finalising WAV headers and seeking the
+            # BytesIO to 0.  We must NOT call cleanup() again here —
+            # AudioData.cleanup() raises if already finished.
             # Resolve guild for member lookup — needed to map user IDs
             # to display names. The transcriber has no Discord API access,
             # so the bot must store speaker identity in the DB now.
@@ -697,19 +693,28 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             if not done_future.done():
                 done_future.set_result(audio_count)
 
-    def after_cb(exc: Exception | None) -> None:
-        """Synchronous after-callback for py-cord.
+    def after_cb(_sink, *args) -> None:
+        """Synchronous after-callback for py-cord PR #3159.
 
-        Schedules async audio processing on the event loop. This may be
-        called from a non-loop thread, hence run_coroutine_threadsafe.
+        PR #3159 changed the callback signature from ``after(exc)`` to
+        ``after(sink, *args)`` — the sink is the first positional argument,
+        not an exception.  The old 2.8.0 ``after(exc)`` signature is gone.
 
-        py-cord 2.8.0 may invoke this callback more than once (the DAVE
-        router calls stop_recording() on error, which fires the callback
-        again). The _processing_started guard ensures we only process
-        audio once.
+        The callback may be invoked from a non-loop thread (py-cord's socket
+        listener or AudioReader._stop()), so we schedule the async audio
+        processing on the bot's event loop via run_coroutine_threadsafe.
+
+        PR #3159's _stop() also guards the callback with
+        ``if self.after and self.args`` — if no *args are passed to
+        start_recording(), self.args is an empty tuple (falsy) and the
+        callback is never invoked.  We pass a dummy arg (None) at the
+        call site to satisfy this check.
+
+        The _processing_started guard ensures we only process audio once
+        even if the callback is somehow invoked twice.
         """
         if _processing_started:
             return
-        asyncio.run_coroutine_threadsafe(_process_recording(exc), loop)
+        asyncio.run_coroutine_threadsafe(_process_recording(None), loop)
 
     return after_cb, done_future

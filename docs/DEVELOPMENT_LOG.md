@@ -1164,3 +1164,39 @@ Despite the DAVE readiness wait confirming `dave_session.ready = True` within 0.
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** `/stop` now responds immediately and delivers the final result as a followup. The DB migration ensures the `audio_files` table has the `discord_user_id` and `speaker_name` columns regardless of when the DB was first created.
+
+## 2026-07-15: Fix after-callback not firing (PR #3159 self.args guard) and double-cleanup
+
+### Problems
+
+1. **Recording callback never fired — 30s timeout every time.** After deploying PR #3159, `/stop` always hit the 30-second callback timeout. The bot reported "Recording stopped! Session ... has been queued for transcription" but the session was queued with zero audio files. Root cause: PR #3159's `AudioReader._stop()` guards the callback invocation with `if self.after and self.args:`. Our `/start` called `vc.start_recording(sink, after_cb)` with no extra `*args`, so `self.args` was an empty tuple (falsy) — the callback was never invoked.
+
+2. **Callback signature changed.** PR #3159 calls `self.after(self.sink, *self.args)` — the sink is the first positional argument, not an exception. Our `after_cb(exc)` would have received the sink object as `exc`.
+
+3. **Double cleanup.** PR #3159's `AudioReader._stop()` calls `sink.cleanup()` (which includes `audio_data.cleanup()` + `format_audio()`) **after** the after-callback. Our `_process_recording` also called `audio_data.cleanup()` and `sink.format_audio()`, which would raise `SinkException("already finished writing")`.
+
+4. **Timeout fell through to transcription queue.** When the callback timed out, `audio_count` was `None`. The `/stop` command checked `audio_count == 0` (False for `None`), so it fell through to `end_session()` — queuing an empty session for transcription.
+
+### Fixes
+
+1. **`bot/commands.py` `/start`** — Pass a dummy `None` argument to `start_recording()`: `vc.start_recording(sink, after_cb, None)`. This makes `self.args = (None,)` (truthy), so the callback fires. The dummy is harmless — it's forwarded as `*args` to `after_cb`, which ignores them.
+
+2. **`bot/commands.py` `make_recording_after_callback`** — Changed callback signature from `after_cb(exc)` to `after_cb(_sink, *args)`. The sink is ignored (the closure already captures it); `_sink` is the first positional arg from PR #3159's `after(sink, *args)` call.
+
+3. **`bot/commands.py` `_process_recording`** — Removed explicit `audio_data.cleanup()` and `sink.format_audio()` calls. PR #3159's `_stop()` calls `sink.cleanup()` after the callback, so these are now redundant and would raise `SinkException`.
+
+4. **`bot/commands.py` `/stop`** — Changed `audio_count == 0` to `audio_count is None` for the timeout check. When the callback times out, `audio_count` is `None` (not `0`); the command now calls `db.fail_session()` and sends an ephemeral error message instead of queuing an empty session.
+
+### Verification
+
+- 328/328 tests pass (0 warnings)
+- All 14 `after_cb(None)` calls in `tests/test_recording_callback.py` updated to `after_cb(sink)` to match PR #3159's `after(sink, *args)` signature
+- Test `test_callback_receives_exception_argument` renamed to `test_callback_receives_sink_argument`
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — Updated "py-cord Recording After-Callback" section: documented PR #3159's `after(sink, *args)` signature, the `self.args` truthiness guard, the dummy `None` arg workaround, and `sink.cleanup()` being called by `_stop()`. Updated "AudioData.file.getbuffer()" to note that `cleanup()` must not be called by the callback. Updated "Empty Recording Handling" to document the timeout → `None` → `fail_session()` path.
+- `docs/KNOWN_ISSUES.md` — Added callback `self.args` guard and signature change to the PR #3159 dependency entry.
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** The after-callback now fires correctly, allowing audio files to be written and the session to be processed. The double-cleanup issue is prevented. The timeout case is handled gracefully — failed sessions are marked FAILED instead of being queued with no audio. Next step: deploy and test with actual speech (logs show only RTCP sender reports so far — no RTP audio packets).

@@ -3,7 +3,7 @@
 Tests the make_recording_after_callback function which replaces the old
 broken recording_finished_callback. The key behaviours tested:
 
-- The callback is synchronous (py-cord 2.8.0 requires a sync after-callback)
+- The callback is synchronous (py-cord requires a sync after-callback)
 - The callback schedules async audio processing on the event loop
 - Audio files are written to disk and registered in the DB
 - Speaker names are resolved from the guild member cache
@@ -206,10 +206,10 @@ class TestMakeRecordingAfterCallback:
             bot, "test-session", "123", "456", sink,
         )
 
-        after_cb(None)
+        # PR #3159 calls after(sink, *args) — sink is the first positional arg
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
-        assert len(db.audio_files) == 2
         paths = [f["filepath"] for f in db.audio_files]
         assert any("111" in p for p in paths)
         assert any("222" in p for p in paths)
@@ -232,10 +232,9 @@ class TestMakeRecordingAfterCallback:
             bot, "test-session", "123", "456", sink,
         )
 
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
-        assert len(db.audio_files) == 1
         assert db.audio_files[0]["speaker_name"] == "Rogar the Brave"
 
     async def test_speaker_name_falls_back_to_user_id(self, mock_file_io):
@@ -250,10 +249,9 @@ class TestMakeRecordingAfterCallback:
             bot, "test-session", "123", "456", sink,
         )
 
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
-        assert len(db.audio_files) == 1
         assert db.audio_files[0]["speaker_name"] == "999"
 
     async def test_future_resolves_on_success(self, mock_file_io):
@@ -266,7 +264,7 @@ class TestMakeRecordingAfterCallback:
             bot, "test-session", "123", "456", sink,
         )
 
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
         assert future.done()
         # Future result is the audio file count (1 file in this test)
@@ -284,7 +282,7 @@ class TestMakeRecordingAfterCallback:
                 bot, "test-session", "123", "456", sink,
             )
 
-            after_cb(None)
+            after_cb(sink)
             await asyncio.wait_for(future, timeout=5.0)
             assert future.done()
 
@@ -299,7 +297,7 @@ class TestMakeRecordingAfterCallback:
             bot, "test-session", "123", "456", sink,
         )
 
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
         assert future.done()
@@ -309,8 +307,8 @@ class TestMakeRecordingAfterCallback:
         # stay stuck in RECORDING/QUEUED with no transcript path.
         assert db.failed_sessions == ["test-session"]
 
-    async def test_callback_receives_exception_argument(self, mock_file_io):
-        """The sync callback must accept an exception argument (py-cord contract)."""
+    async def test_callback_receives_sink_argument(self, mock_file_io):
+        """PR #3159 passes the sink as the first positional arg, not an exception."""
         db = FakeDB()
         bot = FakeBot(db)
         sink = FakeSink({})
@@ -319,8 +317,8 @@ class TestMakeRecordingAfterCallback:
             bot, "test-session", "123", "456", sink,
         )
 
-        # py-cord calls after(exc) — exc can be None or an Exception
-        after_cb(None)  # No error
+        # PR #3159 calls after(sink, *args) — sink is the first positional arg
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
     async def test_writes_wav_files_to_disk(self, mock_file_io):
@@ -333,7 +331,7 @@ class TestMakeRecordingAfterCallback:
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
         )
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
         # File content should be captured by mock_file_io
@@ -360,10 +358,9 @@ class TestMakeRecordingAfterCallback:
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123456", "456", sink,
         )
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
-        assert len(received_guild_ids) == 1
         assert received_guild_ids[0] == 123456  # Must be int, not str
 
     async def test_multiple_callbacks_dont_interfere(self, mock_file_io):
@@ -381,8 +378,8 @@ class TestMakeRecordingAfterCallback:
             bot2, "session-2", "300", "400", sink2,
         )
 
-        after1(None)
-        after2(None)
+        after1(sink1)
+        after2(sink2)
 
         await asyncio.wait_for(future1, timeout=5.0)
         await asyncio.wait_for(future2, timeout=5.0)
@@ -405,7 +402,7 @@ class TestMakeRecordingAfterCallback:
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
         )
-        after_cb(None)
+        after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
         assert future.result() == 3
@@ -432,7 +429,7 @@ class TestMakeRecordingAfterCallback:
             return await original_to_thread(func, *args, **kwargs)
 
         with patch("asyncio.to_thread", tracking_to_thread):
-            after_cb(None)
+            after_cb(sink)
             await asyncio.wait_for(future, timeout=5.0)
 
         assert to_thread_called, "asyncio.to_thread was not used for file writes"

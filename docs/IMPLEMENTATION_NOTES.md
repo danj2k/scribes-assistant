@@ -106,7 +106,7 @@ The `/start` command now polls `vc._connection.dave_session.ready` every 250ms f
 
 ### AudioData.file.getbuffer()
 
-py-cord's `AudioData` stores its `BytesIO` buffer at `.file`, not directly on the object. The after-callback calls `audio_data.file.getbuffer()` (not `audio_data.getbuffer()`) when writing WAV files. `audio_data.cleanup()` is also called after writing to release the buffer.
+py-cord's `AudioData` stores its `BytesIO` buffer at `.file`, not directly on the object. The after-callback calls `audio_data.file.getbuffer()` (not `audio_data.getbuffer()`) when writing WAV files. PR #3159's `AudioReader._stop()` calls `sink.cleanup()` (which includes `audio_data.cleanup()` + `format_audio()`) **after** the after-callback, so the callback must not call `cleanup()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
 
 ### libopus Docker Dependency
 
@@ -116,11 +116,15 @@ py-cord decodes incoming Opus audio to PCM via `ctypes` at runtime, loading `lib
 
 When a recording session fails (error during recording or zero audio captured), the after-callback's `finally` block disconnects the bot from the voice channel and sends a notification to the text channel where `/start` was issued. Without this, the bot would remain in the voice channel after a failed session with no user feedback — the user would see "Recording started!" followed by silence. The auto-disconnect and notification code is wrapped in `try/except` so cleanup failures don't prevent the processing future from resolving (which would hang `/stop`).
 
-A `_processing_started` flag guards against py-cord 2.8.0's DAVE router invoking the after-callback twice on error (once from the error handler, once from `stop_recording()`), which previously caused duplicate log lines and double audio file writes.
+A `_processing_started` flag guards against the after-callback being invoked more than once (e.g. py-cord's DAVE router invoking it from both the error handler and `stop_recording()`), which would cause duplicate log lines and double audio file writes.
 
 ### py-cord Recording After-Callback
 
-py-cord 2.8.0's `start_recording(sink, callback)` stores `callback` as an `AudioReader.after` callback. When `stop_recording()` is called, py-cord invokes `after(exc)` **synchronously** from the voice client's thread — it receives the exception (or None), NOT the sink. The callback must be a regular (sync) callable, not a coroutine function.
+PR #3159's `start_recording(sink, callback, *args)` stores `callback` as an `AudioReader.after` callback, with `*args` forwarded to the callback at invocation time. When `stop_recording()` is called, `AudioReader._stop()` invokes `after(sink, *args)` **synchronously** from the voice client's thread — the sink is the first positional argument, not an exception. The callback must be a regular (sync) callable, not a coroutine function.
+
+**`self.args` truthiness guard (PR #3159 quirk):** `AudioReader._stop()` guards the callback invocation with `if self.after and self.args:`. If no `*args` are passed to `start_recording()`, `self.args` is an empty tuple (falsy) and the callback is **never invoked**. The `/start` command passes a dummy `None` argument: `vc.start_recording(sink, after_cb, None)`. This is harmless — the dummy is forwarded as `*args` to `after_cb`, which ignores them.
+
+**`sink.cleanup()` called by `_stop()`:** PR #3159's `AudioReader._stop()` calls `sink.cleanup()` **after** the after-callback. This calls `audio_data.cleanup()` + `format_audio()` for each `AudioData`, finalising WAV headers and seeking the `BytesIO` to 0. The after-callback must **not** call `audio_data.cleanup()` or `format_audio()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
 
 The bot uses `make_recording_after_callback()` to create a sync callback that:
 1. Captures the sink, session metadata, and event loop at creation time (in `start_command`)
@@ -138,6 +142,8 @@ If the callback raises an exception or the future times out, `stop_command` logs
 ### Empty Recording Handling
 
 When nobody speaks during a recording, `sink.audio_data` is empty. The callback writes zero WAV files, calls `fail_session()` to mark the session as FAILED (with `ended_at` set), and resolves the future with result 0. `stop_command` sees the zero result, sends an ephemeral message to the user ("No audio was captured — no transcript will be generated"), and returns without calling `end_session()`.
+
+**Callback timeout:** If the after-callback never fires (e.g. `self.args` quirk before the dummy arg fix, or a py-cord bug), `stop_command`'s 30-second `asyncio.wait_for` times out. The future resolves with `None` (the `except asyncio.TimeoutError` return value). `stop_command` checks `audio_count is None` (not `audio_count == 0`) to distinguish a timeout from an empty recording: a timeout calls `fail_session()` and sends an ephemeral error message; an empty recording sends the "no audio captured" message. Both cases return without calling `end_session()`, preventing the session from being queued for transcription with no audio.
 
 The transcriber also has a safety net: before each poll of `get_next_queued_file()`, it queries `get_queued_sessions_without_files()` and marks any sessions stuck in QUEUED with zero audio files as FAILED. This catches edge cases where the callback's `fail_session()` call didn't fire (e.g. callback exception, timeout, or files lost after writing).
 
