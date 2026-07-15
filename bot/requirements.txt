@@ -1,4 +1,9 @@
-py-cord==2.8.0
+# PR #3159 implements DAVE E2E decryption for voice reception, fixing
+# pycord issue #3139 ("Voice reception is currently broken due to
+# Discord's DAVE protocol").  Not yet merged into pycord master as of
+# July 2026.  When it merges and a new pycord release ships, replace
+# this with a pinned version (e.g. py-cord==2.9.0).
+git+https://github.com/Pycord-Development/pycord@refs/pull/3159/head
 PyYAML>=6.0
 PyNaCl>=1.6,<1.7
 davey>=0.1.4,<1

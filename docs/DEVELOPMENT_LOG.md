@@ -1104,3 +1104,39 @@ Added a DAVE readiness wait in `/start` (`bot/commands.py`): after `vc = await v
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** The bot now waits for the DAVE MLS handshake to complete before starting recording, preventing `OpusError: corrupted stream` from encrypted packets reaching the Opus decoder.
+
+## 2026-07-15: Switch to py-cord PR #3159 branch for DAVE voice reception
+
+### Problem
+
+Despite the DAVE readiness wait confirming `dave_session.ready = True` within 0.2 seconds, `OpusError: corrupted stream` persisted on deployment. Root cause analysis of py-cord 2.8.0 source revealed that while 2.8.0 implements the DAVE *handshake* (`reinit_dave_session`, `process_commit`, `process_welcome`), it does NOT implement DAVE *decryption for incoming audio*. The `PacketDecryptor.decrypt_rtp` method is a stub — pycord itself emits `RuntimeWarning: Voice reception is currently broken due to Discord's DAVE protocol` at `router.py:124` (issue #3139). The handshake completing fast (0.2s) was misleading — it transitions `dave_session.ready` to `True` but `decrypt_rtp` still returns `None`, so no audio is ever decrypted.
+
+### Investigation
+
+- Traced the full py-cord 2.8.0 voice reception source: `router.py`, `reader.py`, `voice_state.py`, `sinks/core.py`, `sinks/wave.py`. Confirmed `decrypt_rtp` never decrypts incoming packets.
+- Found PR #3159 ("refactor(voice): Strict type checking in voice internals & DAVE Support (rec)") by Paillat-dev — a 35-commit PR that properly implements DAVE E2E decryption for voice reception. Confirmed working by community reports (June 2026). Not merged (needs two reviews).
+- Analysed the PR #3159 diff against our 8 monkey-patches:
+  - Patches 1,2,3 (`Sink.__sink_listeners__`, `walk_children`, `is_opus`) — PR adds these to `Sink` directly. Remove.
+  - Patch 5 (`VoiceClient.recording`) — PR adds `Sink.recording` property. Remove.
+  - Patch 6 (`VoiceClient.decoder`) — PR changes WaveSink to use `OpusDecoder` class attributes. Remove.
+  - Patch 7 (`Sink.write` VoiceData unwrapping) — PR rewrites `Sink.write()` to accept `VoiceData | bytes`. Remove.
+  - Patch 4 (`RTPPacket.type`) — NOT in PR. Keep (hasattr-guarded).
+  - Patch 8 (`start_recording` setting `sink.vc`) — PR still has commented-out `sink._client = client`. Keep (hasattr-guarded).
+
+### Changes
+
+1. `bot/requirements.txt` — replaced `py-cord==2.8.0` with `git+https://github.com/Pycord-Development/pycord@refs/pull/3159/head` (with explanatory comment block).
+2. `bot/Dockerfile` — added `git` to `apt-get install` (needed for `pip install git+...`).
+3. `bot/main.py` — removed 6 monkey-patches fixed by PR #3159 (`Sink.__sink_listeners__`, `walk_children`, `is_opus`, `Sink.write` VoiceData, `VoiceClient.recording`, `VoiceClient.decoder`). Kept 2 residual patches (`RTPPacket.type`, `start_recording` `sink.vc` assignment). Updated comments to reflect PR #3159 context.
+
+### Verification
+
+- 328/328 tests pass (0 warnings)
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — replaced "py-cord 2.8.0 DAVE Voice Reception Monkey-Patches" section with "py-cord PR #3159 — DAVE Voice Reception Support" documenting the PR dependency, the 6 removed patches, and the 2 remaining residual patches.
+- `docs/KNOWN_ISSUES.md` — replaced "py-cord 2.8.0 DAVE voice reception bug" technical debt entry with "py-cord PR #3159 dependency (unmerged)" describing the git URL dependency, the 2 remaining patches, and the migration path when the PR merges.
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** The bot now uses a pycord build that properly implements DAVE E2E decryption for voice reception. The 6 redundant monkey-patches have been removed, reducing maintenance burden. The 2 remaining patches are hasattr-guarded no-ops that will activate only if the specific bugs are still present in the PR build. Next step: deploy to deucalion and test with a real Discord voice channel.

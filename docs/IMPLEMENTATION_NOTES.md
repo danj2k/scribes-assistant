@@ -56,31 +56,40 @@ SQLite supports WAL mode for concurrent reads. Both the bot and transcriber acce
 
 The delivery loop polls for sessions ready to be delivered (status = COMPLETE, transcript_path set, thread_id NULL). It previously accessed the database's private `_cursor()` context manager directly, coupling it to the database's internal implementation. It now calls the public `Database.get_sessions_for_delivery()` method instead, which returns a list of `{"id": session_id}` dicts ordered by `ended_at`. The delivery loop has no direct SQL access and no unnecessary commit after the SELECT query.
 
-### py-cord 2.8.0 DAVE Voice Reception Monkey-Patches
+### py-cord PR #3159 — DAVE Voice Reception Support
 
-py-cord 2.8.0 refactored voice reception to support Discord's DAVE (End-to-End Encryption) protocol. The refactor introduced a `SinkEventRouter` and `PacketRouter` (in `discord/voice/receive/`) that call methods and attributes the old `Sink` class never defined. The result is a cascade of `AttributeError` exceptions at every stage of the recording pipeline. This is tracked upstream as pycord issue #3139 — still unfixed on master as of 2.8.0.
+py-cord 2.8.0 refactored voice reception to support Discord's DAVE (End-to-End Encryption) protocol, but the DAVE decryption for incoming audio was never implemented — pycord itself emitted `RuntimeWarning: Voice reception is currently broken due to Discord's DAVE protocol` (router.py:124, issue #3139). This caused `OpusError: corrupted stream` because DAVE-encrypted bytes were fed directly to the Opus decoder.
 
-The workaround in `bot/main.py` monkey-patches eight missing pieces before the bot starts. Each patch is guarded with `hasattr()` (or a `_write_patched` / `_start_recording_patched` flag) so it is a no-op if py-cord fixes this upstream or if downgrading to 2.6.3 (which has a working voice implementation):
+PR #3159 ("refactor(voice): Strict type checking in voice internals & DAVE Support (rec)") by Paillat-dev properly implements DAVE E2E decryption for voice reception. It is a 35-commit PR that was confirmed working by the community (June 2026) but had not yet merged into pycord master as of July 2026 (it needs two reviews). We install it from the PR branch in `requirements.txt`:
 
-1. **`Sink.__sink_listeners__`** — `SinkEventRouter.register_events()` reads `sink.__sink_listeners__` to discover event callbacks. Set to an empty list (we register no sink event listeners).
+```
+git+https://github.com/Pycord-Development/pycord@refs/pull/3159/head
+```
 
-2. **`Sink.walk_children()`** — `SinkEventRouter` iterates `sink.walk_children()` to find child sinks. Returns an empty iterator (WaveSink has no child sinks).
+The Dockerfile installs `git` (needed for `pip install git+...`) alongside `libopus0`.
 
-3. **`Sink.is_opus()`** — `PacketDecoder.__init__()` and `_process_packet()` call `self.sink.is_opus()` to decide whether to create an Opus `Decoder`. Returns `False` (WaveSink wants PCM, so decoding is required).
+When PR #3159 merges and a new pycord release ships, replace the git URL in `requirements.txt` with a pinned version (e.g. `py-cord==2.9.0`).
 
-4. **`RTPPacket.type`** — `reader.py` logs `packet.type` for unexpected RTCP packets. `RTPPacket` lacks the `type` class attribute that `RTCPPacket` defines. Set to `None` (same default as the `RTCPPacket` base).
+The PR also fixes six of the eight bugs we previously monkey-patched in `bot/main.py`:
 
-5. **`VoiceClient.recording`** — `WaveSink.format_audio()` checks `vc.recording` to decide whether to write a WAV header. A property delegating to `is_recording()` (which already exists on `VoiceClient`).
+1. `Sink.__sink_listeners__` — now a class attribute on `Sink` (empty list).
+2. `Sink.walk_children()` — now a generator method on `Sink` (yields nothing).
+3. `Sink.is_opus()` — now a method on `Sink` returning `False`.
+4. `Sink.recording` — now a property on `Sink` checking `self.vc.is_recording()`.
+5. `VoiceClient.decoder` — WaveSink now uses `OpusDecoder` class attributes directly (`OpusDecoder.CHANNELS`, etc.) instead of `vc.decoder`.
+6. `Sink.write()` — now accepts `VoiceData | bytes`, unwrapping `.pcm` internally.
 
-6. **`VoiceClient.decoder`** — `WaveSink.format_audio()` reads `vc.decoder.CHANNELS`, `.SAMPLE_SIZE`, `.SAMPLING_RATE` for the WAV header. A property returning a fresh `opus.Decoder()` (which inherits these constants from `_OpusStruct`).
+Those six patches have been removed. Two patches remain for issues PR #3159 does NOT fix:
 
-7. **`Sink.write()`** — the DAVE `PacketRouter._do_run()` calls `self.sink.write(data, data.source)` where `data` is a `VoiceData` object, but the original `Sink.write()` (decorated by `Filters.container`) expects raw bytes. The patched version checks `hasattr(data, "pcm")` and unwraps `.pcm` (the decoded PCM byte string) before delegating to the original write. Raw bytes still pass through unchanged for backward compatibility.
+1. **`RTPPacket.type`** — `reader.py` logs `packet.type` for unexpected RTCP packets. `RTPPacket` lacks the `type` class attribute that `RTCPPacket` defines. Set to `None` (same default as the `RTCPPacket` base).
 
-8. **`VoiceClient.start_recording`** — the DAVE refactor commented out the assignment of `sink._client` in `AudioReader.__init__` (reader.py line 89: `# self.sink._client = client`). `Sink.client` is a property returning `self.vc`, so without this patch `sink.client` is `None` and `PacketDecoder._process_packet` hits `assert self.sink.client` (AssertionError) on the first audio packet. The patch wraps `start_recording` to set `sink.vc = self` before calling the original, replicating the old `Sink.init(vc)` behaviour.
+2. **`VoiceClient.start_recording`** — the DAVE refactor commented out the assignment of `sink._client` in `AudioReader.__init__` (reader.py: `# self.sink._client = client`). `Sink.client` is a property returning `self.vc`, so without this patch `sink.client` is `None` and `PacketDecoder._process_packet` hits `assert self.sink.client` (AssertionError) on the first audio packet. The patch wraps `start_recording` to set `sink.vc = self` before calling the original, replicating the old `Sink.init(vc)` behaviour.
 
-All patches run at module import time, before `bot.run()` — early enough that `start_recording()` and the entire audio pipeline will always find the attributes present. The patches target the `Sink`, `RTPPacket`, and `VoiceClient` classes directly (not `WaveSink`), so any sink subclass will also work.
+Both remaining patches are guarded with `hasattr()` / a `_start_recording_patched` flag so they are no-ops if py-cord fixes them upstream.
 
-Note: A previous patch #9 monkey-patched `PacketDecryptor.decrypt_rtp` to set `packet.decrypted_data = raw_payload` when DAVE was not ready. This was removed — it fed DAVE-encrypted bytes to the Opus decoder, causing `OpusError: corrupted stream`. The correct behaviour is to leave `decrypted_data` as `None` so the reader drops the packet until the DAVE MLS handshake completes.
+All patches run at module import time, before `bot.run()`. They target the `RTPPacket` and `VoiceClient` classes directly, so any sink subclass will also work.
+
+Note: A previous patch #9 monkey-patched `PacketDecryptor.decrypt_rtp` to set `packet.decrypted_data = raw_payload` when DAVE was not ready. This was removed — it fed DAVE-encrypted bytes to the Opus decoder, causing `OpusError: corrupted stream`. The correct behaviour is to leave `decrypted_data` as `None` so the reader drops the packet until the DAVE MLS handshake completes. With PR #3159, DAVE decryption is now properly implemented so this scenario should not arise.
 
 ### DAVE Readiness Wait in /start
 

@@ -17,70 +17,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import discord
 from discord.ext import commands
 
-# --- py-cord 2.8.0 workaround: the DAVE voice reception refactor broke
-# several methods/attributes that the Sink, RTPPacket, and VoiceClient
-# classes all expect but none define.  Without these, start_recording()
-# and the subsequent audio pipeline raise AttributeError at various stages.
-# Tracked upstream as pycord issue #3139 (still unfixed on master).
+# --- py-cord PR #3159 (DAVE voice reception) residual workarounds.
+# PR #3159 ("refactor(voice): Strict type checking in voice internals
+# & DAVE Support (rec)") implements DAVE E2E decryption for voice
+# reception, fixing pycord issue #3139 ("Voice reception is currently
+# broken due to Discord's DAVE protocol").  We install it from the PR
+# branch in requirements.txt until it merges and a pycord release ships.
 #
-# 1. Sink.__sink_listeners__ — SinkEventRouter.register_events() reads it
-#    (empty list: we register no sink event listeners).
-# 2. Sink.walk_children() — SinkEventRouter iterates it
-#    (empty iterator: WaveSink has no child sinks).
-# 3. Sink.is_opus() — PacketDecoder.__init__/_process_packet calls it to
-#    decide whether to create an Opus Decoder
-#    (False: WaveSink wants PCM, so decoding is required).
-# 4. RTPPacket.type — reader.py logs packet.type for unexpected RTCP
-#    packets; RTPPacket lacks the `type` class attribute that RTCPPacket
-#    defines (None: same default as RTCPPacket base).
-# 5. VoiceClient.recording — WaveSink.format_audio checks vc.recording
-#    (property delegating to is_recording(), which already exists).
-# 6. VoiceClient.decoder — WaveSink.format_audio reads vc.decoder.CHANNELS,
-#    .SAMPLE_SIZE, .SAMPLING_RATE for WAV header
-#    (property returning a fresh opus.Decoder, which inherits these from
-#    _OpusStruct).
+# The PR also fixes most of the Sink/VoiceClient bugs we previously
+# monkey-patched (Sink.__sink_listeners__, walk_children, is_opus,
+# Sink.recording, Sink.write VoiceData handling, WaveSink using
+# OpusDecoder class attributes instead of vc.decoder).  Those patches
+# have been removed.  Two patches remain for issues the PR does NOT fix:
 #
-# 7. Sink.write() — the DAVE router passes VoiceData objects to
-#    sink.write(data, user), but the original write() expects raw bytes.
-#    We wrap the original to extract .pcm (decoded PCM bytes) from
-#    VoiceData before handing it to AudioData.write().
+# 1. RTPPacket.type — reader.py logs packet.type for unexpected RTCP
+#    packets; RTPPacket lacks the `type` class attribute that
+#    RTCPPacket defines (None: same default as RTCPPacket base).
 #
-# 8. VoiceClient.start_recording — the DAVE refactor commented out the
-#    assignment of sink._client in AudioReader.__init__ (reader.py:89),
-#    so sink.vc is never set and sink.client returns None.  We patch
-#    start_recording to set sink.vc = self before creating the AudioReader.
-#    Without this, PacketDecoder._process_packet hits
+# 2. VoiceClient.start_recording — the DAVE refactor commented out the
+#    assignment of sink._client in AudioReader.__init__, so sink.vc is
+#    never set and sink.client returns None.  We patch start_recording
+#    to set sink.vc = self before creating the AudioReader.  Without
+#    this, PacketDecoder._process_packet hits
 #    "assert self.sink.client" (AssertionError) on the first audio packet.
 #
-# All patches are guarded with hasattr() so they are no-ops if py-cord
-# ever fixes this upstream or if downgrading to 2.6.3.
-
-from discord.sinks import Sink as _Sink
-
-if not hasattr(_Sink, "__sink_listeners__"):
-    _Sink.__sink_listeners__ = []
-
-if not hasattr(_Sink, "walk_children"):
-    def _walk_children(self):
-        return iter(())
-    _Sink.walk_children = _walk_children
-
-if not hasattr(_Sink, "is_opus"):
-    _Sink.is_opus = lambda self: False
-
-# Patch Sink.write to handle VoiceData objects from the DAVE router.
-# The original (Filters.container-decorated) write() expects raw bytes,
-# but router._do_run passes VoiceData.  We unwrap .pcm before delegating.
-if not getattr(_Sink, "_write_patched", False):
-    _original_write = _Sink.write
-
-    def _patched_write(self, data, user):
-        if hasattr(data, "pcm"):
-            data = data.pcm
-        return _original_write(self, data, user)
-
-    _Sink.write = _patched_write
-    _Sink._write_patched = True
+# Both patches are guarded with hasattr() so they are no-ops if py-cord
+# fixes them upstream or a future PR build resolves them.
 
 from discord.voice.packets.rtp import RTPPacket as _RTPPacket
 
@@ -89,16 +51,9 @@ if not hasattr(_RTPPacket, "type"):
 
 from discord.voice.client import VoiceClient as _VoiceClient
 
-if not hasattr(_VoiceClient, "recording"):
-    _VoiceClient.recording = property(lambda self: self.is_recording())
-
-if not hasattr(_VoiceClient, "decoder"):
-    from discord.opus import Decoder as _Decoder
-    _VoiceClient.decoder = property(lambda self: _Decoder())
-
 # Patch start_recording to set sink.vc before creating AudioReader.
 # The DAVE refactor commented out the assignment of sink._client in
-# AudioReader.__init__ (reader.py line 89: "# self.sink._client = client").
+# AudioReader.__init__ (reader.py: "# self.sink._client = client").
 # Sink.client is a property that returns self.vc, so without this patch
 # sink.client is None and PacketDecoder._process_packet hits
 # "assert self.sink.client" (AssertionError) on the first audio packet.
