@@ -153,6 +153,10 @@ This ensures `/stop` does not call `end_session()` (which transitions to QUEUED)
 
 The async processing coroutine (`_process_recording`) runs on the event loop. WAV file writes — which can be tens of MB for a 30-minute session — are offloaded to a thread pool via `asyncio.to_thread(_write_audio_files_sync, file_specs)`. The sync helper `_write_audio_files_sync` iterates the file specs, creates directories, writes bytes, and returns the count of successfully written files. Speaker name resolution (guild member cache lookup, no I/O) and DB registration (`add_audio_file`) remain on the event loop. This prevents blocking the event loop during file I/O, which would stall Discord gateway heartbeats and cause the bot to appear unresponsive.
 
+#### Filename sanitisation
+
+py-cord keys `sink.audio_data` by `User`/`Member` objects, not numeric IDs. The callback resolves the display name via `guild.get_member(user_obj)` (falling back to `str(user_obj)`) and passes it through `_sanitize_filename()` before constructing the filepath. This replaces `<>:"/\|?*\0` with underscores, strips leading/trailing spaces and dots, and collapses repeated underscores — preventing a display name like `Duckinell/DM` from creating a spurious directory. The unsanitised display name is stored in the DB `speaker_name` column for transcript output.
+
 If the callback raises an exception or the future times out, `stop_command` logs the error and proceeds with `end_session()` anyway — partial or no audio is better than a stuck session.
 
 ### Empty Recording Handling

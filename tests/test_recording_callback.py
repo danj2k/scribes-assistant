@@ -59,6 +59,30 @@ if "bot" in sys.modules:
 # Fakes
 # ---------------------------------------------------------------------------
 
+class FakeUser:
+    """Mimics a discord.User/Member as an audio_data dict key.
+
+    pycord keys sink.audio_data by user objects, not IDs. Our code calls
+    .id, str(), and passes the key to guild.get_member().
+    """
+    def __init__(self, id: int, display_name: str = None):
+        self.id = id
+        self._display_name = display_name or str(id)
+
+    def __str__(self):
+        return self._display_name
+
+    # So guild.get_member(user_obj) lookups work when FakeGuild stores
+    # members keyed by the same FakeUser instance.
+    def __hash__(self):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        if isinstance(other, FakeUser):
+            return self.id == other.id
+        return self.id == other
+
+
 class FakeAudioData:
     """Mimics py-cord's BytesIO-based audio data container."""
 
@@ -88,8 +112,10 @@ class FakeGuild:
     def __init__(self, members: dict):
         self._members = members
 
-    def get_member(self, user_id):
-        return self._members.get(user_id)
+    def get_member(self, user_obj):
+        # Key by user ID so lookups work with FakeUser or raw int keys
+        key = user_obj if isinstance(user_obj, int) else user_obj.id
+        return self._members.get(key)
 
 
 class FakeDB:
@@ -195,9 +221,11 @@ class TestMakeRecordingAfterCallback:
         db = FakeDB()
         audio_data_1 = FakeAudioData(b"RIFF\x24\x00\x00\x00WAVEfmt ...")
         audio_data_2 = FakeAudioData(b"RIFF\x24\x00\x00\x00WAVEfmt ...")
+        user1 = FakeUser(111)
+        user2 = FakeUser(222)
         sink = FakeSink({
-            111: audio_data_1,
-            222: audio_data_2,
+            user1: audio_data_1,
+            user2: audio_data_2,
         })
 
         bot = FakeBot(db)
@@ -222,11 +250,12 @@ class TestMakeRecordingAfterCallback:
     async def test_speaker_name_resolved_from_guild(self, mock_file_io):
         """Speaker display names should be resolved from the guild member cache."""
         db = FakeDB()
+        user = FakeUser(111)
         member = FakeMember("Rogar the Brave")
         guild = FakeGuild({111: member})
         bot = FakeBot(db, guild=guild)
 
-        sink = FakeSink({111: FakeAudioData(b"audio data")})
+        sink = FakeSink({user: FakeAudioData(b"audio data")})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -238,12 +267,12 @@ class TestMakeRecordingAfterCallback:
         assert db.audio_files[0]["speaker_name"] == "Rogar the Brave"
 
     async def test_speaker_name_falls_back_to_user_id(self, mock_file_io):
-        """If guild member lookup fails, fall back to str(user_id)."""
+        """If guild member lookup fails, fall back to str(user)."""
         db = FakeDB()
         guild = FakeGuild({})  # No members
         bot = FakeBot(db, guild=guild)
 
-        sink = FakeSink({999: FakeAudioData(b"audio data")})
+        sink = FakeSink({FakeUser(999): FakeAudioData(b"audio data")})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -258,7 +287,7 @@ class TestMakeRecordingAfterCallback:
         """The future must resolve after processing completes."""
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({111: FakeAudioData(b"data")})
+        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -274,7 +303,7 @@ class TestMakeRecordingAfterCallback:
         """The future must resolve even if processing throws an exception."""
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({111: FakeAudioData(b"data")})
+        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
 
         # Force an error by making os.makedirs raise
         with patch("os.makedirs", side_effect=OSError("disk full")):
@@ -321,12 +350,24 @@ class TestMakeRecordingAfterCallback:
         after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
 
+    async def test_filename_sanitized(self, mock_file_io):
+        """Display names with unsafe characters (slashes, etc.) must be
+        sanitised so they don't create spurious directories."""
+        from bot.commands import _sanitize_filename
+
+        assert _sanitize_filename("Duckinell/DM") == "Duckinell_DM"
+        assert _sanitize_filename("danj2k (Danj)") == "danj2k (Danj)"
+        assert _sanitize_filename("a/b\\c:d") == "a_b_c_d"
+        assert _sanitize_filename("  spaces  ") == "spaces"
+        assert _sanitize_filename("") == "unknown"
+        assert _sanitize_filename("///") == "_"
+
     async def test_writes_wav_files_to_disk(self, mock_file_io):
         """Audio data should be written as .wav files to the recording directory."""
         audio_bytes = b"RIFF\x24\x00\x00\x00WAVEfmt ...data"
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({42: FakeAudioData(audio_bytes)})
+        sink = FakeSink({FakeUser(42): FakeAudioData(audio_bytes)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -344,7 +385,7 @@ class TestMakeRecordingAfterCallback:
         db = FakeDB()
         guild = FakeGuild({111: FakeMember("TestUser")})
         bot = FakeBot(db, guild=guild)
-        sink = FakeSink({111: FakeAudioData(b"data")})
+        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
 
         received_guild_ids = []
         original_get_guild = bot.get_guild
@@ -368,8 +409,8 @@ class TestMakeRecordingAfterCallback:
         db1, db2 = FakeDB(), FakeDB()
         bot1 = FakeBot(db1)
         bot2 = FakeBot(db2)
-        sink1 = FakeSink({1: FakeAudioData(b"a")})
-        sink2 = FakeSink({2: FakeAudioData(b"b")})
+        sink1 = FakeSink({FakeUser(1): FakeAudioData(b"a")})
+        sink2 = FakeSink({FakeUser(2): FakeAudioData(b"b")})
 
         after1, future1 = make_recording_after_callback(
             bot1, "session-1", "100", "200", sink1,
@@ -394,9 +435,9 @@ class TestMakeRecordingAfterCallback:
         db = FakeDB()
         bot = FakeBot(db)
         sink = FakeSink({
-            1: FakeAudioData(b"a"),
-            2: FakeAudioData(b"b"),
-            3: FakeAudioData(b"c"),
+            FakeUser(1): FakeAudioData(b"a"),
+            FakeUser(2): FakeAudioData(b"b"),
+            FakeUser(3): FakeAudioData(b"c"),
         })
 
         after_cb, future = make_recording_after_callback(
@@ -414,7 +455,7 @@ class TestMakeRecordingAfterCallback:
         event loop is not blocked during potentially large file I/O."""
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({111: FakeAudioData(b"data")})
+        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -442,6 +483,28 @@ class TestMakeRecordingAfterCallback:
         from bot.commands import _write_audio_files_sync
         assert not _inspect.iscoroutinefunction(_write_audio_files_sync)
         assert callable(_write_audio_files_sync)
+
+    async def test_filename_sanitized_in_callback(self, mock_file_io):
+        """A display name containing '/' must not create a subdirectory."""
+        db = FakeDB()
+        user = FakeUser(111, display_name="Duckinell/DM")
+        guild = FakeGuild({111: FakeMember("Duckinell/DM")})
+        bot = FakeBot(db, guild=guild)
+
+        sink = FakeSink({user: FakeAudioData(b"audio data")})
+
+        after_cb, future = make_recording_after_callback(
+            bot, "test-session", "123", "456", sink,
+        )
+        after_cb(sink)
+        await asyncio.wait_for(future, timeout=5.0)
+
+        # The sanitised filename should contain no slash
+        wav_paths = [p for p in mock_file_io if p.endswith(".wav")]
+        assert len(wav_paths) == 1
+        assert "/" not in wav_paths[0].split("/")[-1], \
+            f"Filename contains slash: {wav_paths[0]}"
+        assert wav_paths[0].endswith("Duckinell_DM.wav")
 
     async def test_write_audio_files_sync_writes_all_files(self, mock_file_io):
         """_write_audio_files_sync should write all files and return the count."""

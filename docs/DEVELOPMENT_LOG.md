@@ -1,5 +1,27 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-15 — Fix: sanitise recording filenames (display name path traversal)
+
+Recording files were named using Discord display names via `str(user_obj)`
+where `user_obj` is the key from py-cord's `sink.audio_data` dict (keyed by
+User/Member objects, not numeric IDs). Discord display names can contain
+slashes — e.g. `llenikcud (Duckinell/DM)` — and the `/` was interpreted as
+a path separator, creating a spurious directory `llenikcud (Duckinell/`
+with `DM).wav` inside it instead of a single file.
+
+Fix: added `_sanitize_filename()` in `bot/commands.py` which replaces
+`<>:"/\|?*\0` with underscores, strips leading/trailing spaces and dots,
+and collapses repeated underscores. The recording callback now applies
+this to the display name before constructing the filepath. The unsanitised
+display name is still stored in the DB `speaker_name` column for transcript
+output.
+
+Tests: added `test_filename_sanitized` (unit tests for the function) and
+`test_filename_sanitized_in_callback` (end-to-end via the callback with a
+display name containing `/`). Updated all recording callback tests to use
+`FakeUser` objects (mimicking pycord's User/Member keys) instead of raw
+integers. 338/338 pass.
+
 ## 2026-07-15 — Fix: public thread delivery (private thread default)
 
 The delivery loop was creating private threads instead of public threads.

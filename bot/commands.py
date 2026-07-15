@@ -519,6 +519,29 @@ def setup_commands(bot: commands.Bot):
     bot.add_application_command(lexicon_group)
 
 
+def _sanitize_filename(name: str) -> str:
+    """Make a string safe for use as a filename.
+
+    Discord display names can contain slashes, parentheses, and other
+    characters that are problematic on the filesystem (e.g. a '/' in
+    'Duckinell/DM' is interpreted as a path separator, creating a
+    spurious directory).  Replace any character that is unsafe on any
+    common filesystem with an underscore.
+    """
+    # Characters forbidden on Windows, plus '/' and '\' on Unix.
+    unsafe = '<>:"/\\|?*\0'
+    result = "".join("_" if c in unsafe else c for c in name)
+    # Collapse leading/trailing spaces and dots (problematic on Windows).
+    result = result.strip(" .")
+    # Collapse runs of underscores so 'Duckinell/DM' -> 'Duckinell_DM'
+    # rather than 'Duckinell_DM' (already fine, but handles cases like
+    # 'a//b' -> 'a__b' -> we don't want double underscores).
+    while "__" in result:
+        result = result.replace("__", "_")
+    # Fallback if the name was entirely unsafe characters.
+    return result or "unknown"
+
+
 def _write_audio_files_sync(file_specs):
     """Write WAV files to disk synchronously.
 
@@ -608,23 +631,25 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             # thread via asyncio.to_thread.
             file_specs = []
             speaker_info = []  # (discord_user_id, speaker_name, size_bytes)
-            for user_id, audio_data in sink.audio_data.items():
-                filepath = f"{rec_dir}/{user_id}.wav"
-                # AudioData wraps a BytesIO at .file; getbuffer() lives on
-                # the BytesIO, not on AudioData itself.  Using
-                # audio_data.file.getbuffer() avoids
-                # "'AudioData' object has no attribute 'getbuffer'".
-                raw_bytes = audio_data.file.getbuffer()
-                file_specs.append((filepath, bytes(raw_bytes)))
-
-                speaker_name = str(user_id)
+            for user_obj, audio_data in sink.audio_data.items():
+                # pycord keys audio_data by User/Member objects, not IDs.
+                # Use the member's display name (sanitised) for the filename
+                # so files are human-readable, but strip path separators and
+                # other unsafe characters first — a display name like
+                # 'Duckinell/DM' would otherwise create a spurious directory.
+                speaker_name = str(user_obj)  # fallback: 'username#1234'
                 if guild is not None:
-                    member = guild.get_member(user_id)
+                    member = guild.get_member(user_obj)
                     if member is not None:
                         speaker_name = member.display_name
 
+                safe_name = _sanitize_filename(speaker_name)
+                filepath = f"{rec_dir}/{safe_name}.wav"
+                raw_bytes = audio_data.file.getbuffer()
+                file_specs.append((filepath, bytes(raw_bytes)))
+
                 speaker_info.append(
-                    (str(user_id), speaker_name, raw_bytes.nbytes)
+                    (str(user_obj.id), speaker_name, raw_bytes.nbytes)
                 )
 
             # Offload blocking file writes to a thread pool so the
