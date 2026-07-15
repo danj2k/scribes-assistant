@@ -1245,3 +1245,38 @@ Despite the DAVE readiness wait confirming `dave_session.ready = True` within 0.
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** The after-callback now fires correctly, allowing audio files to be written and the session to be processed. The double-cleanup issue is prevented. The timeout case is handled gracefully — failed sessions are marked FAILED instead of being queued with no audio. Next step: deploy and test with actual speech (logs show only RTCP sender reports so far — no RTP audio packets).
+
+## 2026-07-15 — Timestamps and Transcript Formatting
+
+### Problem
+
+After deploying the transcriber hotwords fix, the transcriber produced output but with three formatting issues:
+1. **No timestamps** — transcript was untimestamped despite sherpa-onnx Whisper supporting token-level timestamps via DTW on cross-attention weights.
+2. **Newline between speaker name and dialogue** — fallback path used `f"{speaker}:\n{text}"` instead of `f"{speaker}: {text}"`.
+3. **No trailing newline** — neither the timestamped nor fallback path added a trailing `\n`.
+
+### Root Cause
+
+`from_whisper()` accepts `enable_token_timestamps` (default `False`) and `enable_segment_timestamps` (default `False`). Without enabling these, `result.timestamps` and `result.tokens` are empty lists. `_build_segments()` checks for empty tokens and returns `[]`, causing `_build_interleaved_transcript()` to fall back to the per-speaker block path — which had the formatting issues.
+
+### Fixes
+
+1. **`transcriber/worker.py` `load_model()`** — Added `enable_token_timestamps=True` to the `from_whisper()` call. This enables DTW-based token-level timestamp extraction, populating `result.timestamps` and `result.tokens`.
+
+2. **`transcriber/main.py` `_build_interleaved_transcript()`** — Fixed fallback path: changed `f"{speaker}:\n{text.strip()}"` to `f"{speaker}: {text.strip()}"` (speaker and dialogue on same line). Added trailing `\n` to both the timestamped and fallback return values.
+
+3. **`shared/database.py` `get_sessions_for_delivery()`** — Fixed `KeyError` when bot tried to pick up completed transcript for delivery. The query only selected `id`, but `_deliver()` accesses `session["transcript_path"]` and `session["discord_channel_id"]`. Changed to `SELECT id, transcript_path, discord_channel_id` and return `dict(r)` for each row.
+
+### Tests Added (3 tests, 330 total)
+
+- `tests/test_transcriber_worker.py::test_load_model_enables_token_timestamps` — asserts `enable_token_timestamps=True` is passed to `from_whisper()`.
+- `tests/test_transcript_merge.py::test_with_segments` — updated to assert trailing newline.
+- `tests/test_transcript_merge.py::test_no_segments_fallback_to_per_speaker` — updated to assert speaker name and dialogue on same line, no newline after colon, and trailing newline.
+- `tests/test_database.py::test_get_sessions_for_delivery_returns_transcript_path_and_channel` — asserts `transcript_path` and `discord_channel_id` keys are present in returned dicts (added with delivery fix).
+
+### Documentation Updated
+
+- `docs/IMPLEMENTATION_NOTES.md` — Added "Token timestamps" section documenting `enable_token_timestamps=True`.
+- `docs/DEVELOPMENT_LOG.md` — this entry.
+
+**Impact:** Transcripts now include timestamps (via token-level DTW alignment), speaker names appear on the same line as dialogue, and files end with a trailing newline. The bot can successfully pick up completed transcripts for delivery without `KeyError`.

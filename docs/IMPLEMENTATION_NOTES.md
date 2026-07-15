@@ -28,6 +28,8 @@ The lexicon terms are formatted by `build_hotwords()` into a forward-slash separ
 
 **Empty hotwords → None:** When the lexicon is empty, `build_hotwords([])` returns `""`. This must NOT be passed to `create_stream()` as-is — sherpa-onnx's Python wrapper only skips the C++ contextual biasing code path when `hotwords is None`. An empty string (`""`) enters the biasing path, which prints "Only transducer models support contextual biasing" and segfaults on Whisper (non-transducer) models. The fix in `transcriber/worker.py` passes `hotwords or None` to `create_stream()`, converting `""` to `None`.
 
+**Token timestamps:** `from_whisper()` accepts `enable_token_timestamps` (default `False`). When enabled, sherpa-onnx uses DTW on the cross-attention weights to compute token-level start times, stored in `result.timestamps` alongside `result.tokens`. Without this, both lists are empty, `_build_segments()` returns `[]`, and the transcript builder falls back to untimestamped per-speaker blocks. The `load_model()` method in `transcriber/worker.py` passes `enable_token_timestamps=True` to ensure timestamps are always available.
+
 **Stage 2: Fuzzy post-correction (after transcription, transcriber side)**
 After each audio file is transcribed, `transcriber/main.py`'s `_correct_text()` applies a three-stage correction pipeline to every word in each segment:
 

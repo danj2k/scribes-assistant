@@ -74,9 +74,12 @@ def _build_interleaved_transcript(db: Database, session_id: str) -> str:
             ts = _format_timestamp(seg["start_time"])
             speaker = seg.get("speaker_name") or seg.get("discord_user_id") or "Unknown"
             lines.append(f"[{ts}] {speaker}: {seg['text']}")
-        return "\n".join(lines)
+        return "\n".join(lines) + "\n"
 
-    # Fallback: per-speaker blocks using audio_files.transcript_text
+    # Fallback: per-speaker blocks using audio_files.transcript_text.
+    # This path is only hit when the recogniser didn't produce timestamps
+    # (e.g. model loaded without enable_token_timestamps). With timestamps
+    # enabled, the timestamped-segments path above is used instead.
     audio_files = db.get_audio_files(session_id)
     if not audio_files:
         return ""
@@ -86,8 +89,8 @@ def _build_interleaved_transcript(db: Database, session_id: str) -> str:
         speaker = af.get("speaker_name") or af.get("discord_user_id") or "Unknown"
         text = af.get("transcript_text") or ""
         if text.strip():
-            blocks.append(f"{speaker}:\n{text.strip()}")
-    return "\n\n".join(blocks)
+            blocks.append(f"{speaker}: {text.strip()}")
+    return "\n\n".join(blocks) + "\n" if blocks else ""
 
 
 def _correct_text(text: str, lexicon: Lexicon | None) -> str:

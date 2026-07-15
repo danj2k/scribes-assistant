@@ -65,6 +65,21 @@ class TestWorkerLoadModel:
         assert call_kwargs["decoder"].endswith("small-decoder.onnx")
         assert call_kwargs["tokens"].endswith("small-tokens.txt")
 
+    @patch("transcriber.worker.sherpa_onnx")
+    def test_load_model_enables_token_timestamps(self, mock_sherpa):
+        """load_model must enable token timestamps for timestamped transcripts.
+
+        Without enable_token_timestamps=True, sherpa-onnx Whisper produces
+        empty result.timestamps, causing _build_segments() to return [] and
+        the transcript builder to fall back to untimestamped output.
+        """
+        from transcriber.worker import TranscriptionWorker
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        worker.load_model()
+
+        call_kwargs = mock_sherpa.OfflineRecognizer.from_whisper.call_args[1]
+        assert call_kwargs["enable_token_timestamps"] is True
+
 
 class TestWorkerTranscribe:
     """Tests for the transcribe method."""

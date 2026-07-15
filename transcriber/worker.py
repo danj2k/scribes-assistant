@@ -80,12 +80,18 @@ class TranscriptionWorker:
         """Load the sherpa-onnx Whisper model. Call once at startup."""
         size = self.model_size
         try:
+            # enable_token_timestamps uses DTW on cross-attention weights to
+            # produce token-level start times in result.timestamps. Without
+            # this, result.timestamps is empty and _build_segments() returns
+            # an empty list, causing the transcript builder to fall back to
+            # untimestamped per-speaker blocks.
             self.recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
                 encoder=os.path.join(self.model_path, f"{size}-encoder.onnx"),
                 decoder=os.path.join(self.model_path, f"{size}-decoder.onnx"),
                 tokens=os.path.join(self.model_path, f"{size}-tokens.txt"),
                 num_threads=self.num_threads,
                 decoding_method="greedy_search",
+                enable_token_timestamps=True,
             )
             logger.info("Loaded sherpa-onnx Whisper model from %s", self.model_path)
 

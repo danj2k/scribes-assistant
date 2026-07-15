@@ -55,10 +55,11 @@ class TestBuildInterleavedTranscript:
         db.add_transcript_segment("s1", file_id=1, start_time=5.0, text="Alice mid", seq=1)
 
         result = _build_interleaved_transcript(db, "s1")
-        lines = result.split("\n")
+        lines = result.rstrip("\n").split("\n")
         assert lines[0] == "[00:00:02] Bob: Bob early"
         assert lines[1] == "[00:00:05] Alice: Alice mid"
         assert lines[2] == "[00:00:10] Alice: Alice later"
+        assert result.endswith("\n")
 
     def test_no_segments_fallback_to_per_speaker(self, db):
         """When no segments exist, falls back to per-speaker blocks."""
@@ -69,11 +70,14 @@ class TestBuildInterleavedTranscript:
         db.add_transcript(2, "Bob replied.")
 
         result = _build_interleaved_transcript(db, "s1")
-        # Should contain both speakers in per-speaker block format
-        assert "Alice:" in result
-        assert "Bob:" in result
-        assert "Alice said something." in result
-        assert "Bob replied." in result
+        # Speaker name on same line as dialogue (no newline after colon)
+        assert "Alice: Alice said something." in result
+        assert "Bob: Bob replied." in result
+        # No newline between speaker name and dialogue
+        assert "Alice:\n" not in result
+        assert "Bob:\n" not in result
+        # Trailing newline
+        assert result.endswith("\n")
 
     def test_no_segments_no_transcripts(self, db):
         """No segments and no transcripts returns empty string."""
