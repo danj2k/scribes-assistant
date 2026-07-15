@@ -1,5 +1,41 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-15 — Fix: segment timestamps + 28s audio chunking + transcript formatting
+
+The transcriber was producing untimestamped transcripts with formatting
+issues: a newline between the speaker name and dialogue, and no trailing
+newline. The root cause was two-fold.
+
+**Timestamps:** The initial fix used `enable_token_timestamps=True`, which
+requires cross-attention outputs in the ONNX model. The standard
+sherpa-onnx Whisper export (`whisper-small`) does NOT include attention
+weights — sherpa-onnx printed a warning ("enable_token_timestamps=true but
+the decoder model does not have cross-attention outputs") and produced
+empty timestamp lists. Switched to `enable_segment_timestamps=True`,
+which parses Whisper's native `<|0.00|>` timestamp tokens and works with
+any standard ONNX export. The segment data is stored in
+`result.segment_timestamps` / `result.segment_texts` / `result.segment_durations`
+(instead of `result.timestamps` / `result.tokens`). `_build_segments()` was
+rewritten to read these fields.
+
+**30-second limit:** sherpa-onnx Whisper silently discards audio beyond the
+first 30 seconds ("Only waves less than 30 seconds are supported"). Added
+28-second chunking in `transcribe()` — audio is split into 28-second
+segments, each transcribed independently, and segment timestamps are
+offset by the chunk's start time so the merged transcript is chronological
+across the full file.
+
+**Formatting:** The fallback (untimestamped) path used
+`f"{speaker}:\n{text}"` (newline after colon). Changed to
+`f"{speaker}: {text}"` (colon-space). Both timestamped and fallback
+paths now end with a trailing newline.
+
+Tests: updated all `result.tokens`/`result.timestamps` mocks to use
+`result.segment_texts`/`result.segment_timestamps`. Updated audio
+mocks from MagicMock to real numpy arrays (chunking uses `len()` and
+slicing, which require real arrays). Added multi-chunk test verifying
+timestamp offsets and text concatenation. 335/335 pass.
+
 ## 2026-07-15 — Fix: get_sessions_for_delivery missing columns (KeyError on delivery)
 
 The transcriber successfully produced a transcript and wrote it to

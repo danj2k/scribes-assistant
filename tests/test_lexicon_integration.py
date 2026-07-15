@@ -10,11 +10,12 @@ class TestTranscriptionWorkerHotwords:
 
     def test_transcribe_passes_hotwords_to_create_stream(self):
         """Hotwords string is forwarded to recognizer.create_stream()."""
+        import numpy as np
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = MagicMock()
-            mock_audio.shape = (16000,)
+            # Short audio (< 28s) → single chunk, one create_stream call
+            mock_audio = np.zeros(16000, dtype="float32")
             mock_sf.read.return_value = (mock_audio, 16000)
 
             w = TranscriptionWorker("/tmp/model")
@@ -28,11 +29,11 @@ class TestTranscriptionWorkerHotwords:
 
     def test_transcribe_no_hotwords_when_none(self):
         """create_stream called without hotwords when none provided."""
+        import numpy as np
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = MagicMock()
-            mock_audio.shape = (16000,)
+            mock_audio = np.zeros(16000, dtype="float32")
             mock_sf.read.return_value = (mock_audio, 16000)
 
             w = TranscriptionWorker("/tmp/model")
@@ -47,11 +48,11 @@ class TestTranscriptionWorkerHotwords:
         create_stream segfaults on Whisper models when hotwords is a non-None
         string (even ""), because it enters the contextual biasing code path
         which is only valid for transducer models."""
+        import numpy as np
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = MagicMock()
-            mock_audio.shape = (16000,)
+            mock_audio = np.zeros(16000, dtype="float32")
             mock_sf.read.return_value = (mock_audio, 16000)
 
             w = TranscriptionWorker("/tmp/model")

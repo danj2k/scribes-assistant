@@ -110,61 +110,74 @@ class TestBuildInterleavedTranscript:
 
 
 class TestBuildSegments:
-    """Tests for TranscriptionWorker._build_segments."""
+    """Tests for TranscriptionWorker._build_segments.
 
-    def test_no_tokens_returns_empty(self):
-        """No token data returns empty list (fallback path)."""
+    _build_segments now reads result.segment_texts and result.segment_timestamps
+    (populated by enable_segment_timestamps=True) rather than the old token-level
+    result.tokens/result.timestamps fields.
+    """
+
+    def test_no_segment_data_returns_empty(self):
+        """No segment timestamp data returns empty list (fallback path)."""
         result = MagicMock()
-        result.tokens = None
-        result.timestamps = None
+        result.segment_texts = None
+        result.segment_timestamps = None
         segs = TranscriptionWorker._build_segments(result)
         assert segs == []
 
-    def test_empty_tokens_returns_empty(self):
-        """Empty token lists return empty."""
+    def test_empty_segments_returns_empty(self):
+        """Empty segment lists return empty."""
         result = MagicMock()
-        result.tokens = []
-        result.timestamps = []
+        result.segment_texts = []
+        result.segment_timestamps = []
         segs = TranscriptionWorker._build_segments(result)
         assert segs == []
 
     def test_mismatched_lengths_returns_empty(self):
-        """Mismatched token/timestamp lengths return empty."""
+        """Mismatched segment_texts/segment_timestamps lengths return empty."""
         result = MagicMock()
-        result.tokens = ["a", "b"]
-        result.timestamps = [1.0]
+        result.segment_texts = ["Hello world.", "Bye."]
+        result.segment_timestamps = [1.0]
         segs = TranscriptionWorker._build_segments(result)
         assert segs == []
 
-    def test_single_sentence(self):
-        """A single sentence produces one segment."""
+    def test_single_segment(self):
+        """A single segment produces one TranscriptSegment."""
         result = MagicMock()
-        result.tokens = ["Hello", " ", "world", "."]
-        result.timestamps = [0.5, 0.6, 0.7, 0.8]
+        result.segment_texts = ["Hello world."]
+        result.segment_timestamps = [0.5]
         segs = TranscriptionWorker._build_segments(result)
         assert len(segs) == 1
         assert segs[0].start_time == 0.5
-        assert "Hello" in segs[0].text
-        assert "world" in segs[0].text
+        assert segs[0].text == "Hello world."
 
-    def test_multiple_sentences(self):
-        """Multiple sentences produce multiple segments."""
+    def test_multiple_segments(self):
+        """Multiple segments produce multiple TranscriptSegments."""
         result = MagicMock()
-        result.tokens = ["Hi", ".", " Bye", "."]
-        result.timestamps = [1.0, 1.5, 3.0, 3.5]
+        result.segment_texts = ["Hi.", "Bye."]
+        result.segment_timestamps = [1.0, 3.0]
         segs = TranscriptionWorker._build_segments(result)
         assert len(segs) == 2
         assert segs[0].start_time == 1.0
+        assert segs[0].text == "Hi."
         assert segs[1].start_time == 3.0
+        assert segs[1].text == "Bye."
 
-    def test_large_gap_creates_segment(self):
-        """A gap > 1 second between tokens creates a new segment."""
+    def test_strips_whitespace(self):
+        """Leading/trailing whitespace is stripped from segment text."""
         result = MagicMock()
-        result.tokens = ["Hello", " world"]
-        result.timestamps = [1.0, 3.0]  # 2-second gap
+        result.segment_texts = ["  Hello world.  "]
+        result.segment_timestamps = [0.0]
         segs = TranscriptionWorker._build_segments(result)
-        # The first token starts a segment, the gap after it ends it,
-        # and the second token starts a new segment.
+        assert len(segs) == 1
+        assert segs[0].text == "Hello world."
+
+    def test_skips_empty_text_segments(self):
+        """Segments with only whitespace are skipped."""
+        result = MagicMock()
+        result.segment_texts = ["Hello.", "   ", "World."]
+        result.segment_timestamps = [1.0, 2.0, 3.0]
+        segs = TranscriptionWorker._build_segments(result)
         assert len(segs) == 2
-        assert segs[0].start_time == 1.0
-        assert segs[1].start_time == 3.0
+        assert segs[0].text == "Hello."
+        assert segs[1].text == "World."

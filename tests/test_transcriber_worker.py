@@ -66,19 +66,19 @@ class TestWorkerLoadModel:
         assert call_kwargs["tokens"].endswith("small-tokens.txt")
 
     @patch("transcriber.worker.sherpa_onnx")
-    def test_load_model_enables_token_timestamps(self, mock_sherpa):
-        """load_model must enable token timestamps for timestamped transcripts.
+    def test_load_model_enables_segment_timestamps(self, mock_sherpa):
+        """load_model must enable segment timestamps for timestamped transcripts.
 
-        Without enable_token_timestamps=True, sherpa-onnx Whisper produces
-        empty result.timestamps, causing _build_segments() to return [] and
-        the transcript builder to fall back to untimestamped output.
+        Uses enable_segment_timestamps=True (Whisper native <|0.00|> tokens)
+        rather than enable_token_timestamps (which requires cross-attention
+        outputs in the ONNX model — standard models lack these).
         """
         from transcriber.worker import TranscriptionWorker
         worker = TranscriptionWorker(model_path="/tmp/models")
         worker.load_model()
 
         call_kwargs = mock_sherpa.OfflineRecognizer.from_whisper.call_args[1]
-        assert call_kwargs["enable_token_timestamps"] is True
+        assert call_kwargs["enable_segment_timestamps"] is True
 
 
 class TestWorkerTranscribe:
@@ -88,9 +88,12 @@ class TestWorkerTranscribe:
     @patch("transcriber.worker.sf")
     def test_transcribe_returns_text(self, mock_sf, mock_sherpa):
         """transcribe returns TranscriptionResult with text from the model."""
+        import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        mock_sf.read.return_value = (MagicMock(), 16000)
+        # Short audio (< 28s) → single chunk, one create_stream call
+        audio = np.zeros(16000, dtype="float32")  # 1 second
+        mock_sf.read.return_value = (audio, 16000)
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -100,9 +103,9 @@ class TestWorkerTranscribe:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = "Hello world"
-        # No token-level timestamp data on the mock → segments empty
-        mock_stream.result.tokens = None
-        mock_stream.result.timestamps = None
+        # No segment-level timestamp data on the mock → segments empty
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
 
         result = worker.transcribe("/tmp/audio.opus")
         assert result is not None
@@ -113,9 +116,11 @@ class TestWorkerTranscribe:
     @patch("transcriber.worker.sf")
     def test_transcribe_empty_audio(self, mock_sf, mock_sherpa):
         """transcribe returns empty text for silence."""
+        import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        mock_sf.read.return_value = (MagicMock(), 16000)
+        audio = np.zeros(16000, dtype="float32")  # 1 second
+        mock_sf.read.return_value = (audio, 16000)
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -125,8 +130,8 @@ class TestWorkerTranscribe:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = ""
-        mock_stream.result.tokens = None
-        mock_stream.result.timestamps = None
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
 
         result = worker.transcribe("/tmp/silence.opus")
         assert result is not None
@@ -148,7 +153,7 @@ class TestTranscribeNoNumpyToList:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.array([0.0, 0.1, 0.2, 0.3], dtype="float32")
+        audio = np.zeros(16000, dtype="float32")  # 1 second
         mock_sf.read.return_value = (audio, 16000)
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -159,17 +164,18 @@ class TestTranscribeNoNumpyToList:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = "test"
-        mock_stream.result.tokens = None
-        mock_stream.result.timestamps = None
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
 
         worker.transcribe("/tmp/audio.wav")
 
-        # accept_waveform should receive the numpy array itself
+        # accept_waveform should receive a numpy array (or view) directly,
+        # not a Python list created by .tolist()
         call_args = mock_stream.accept_waveform.call_args
         assert call_args is not None
         passed_audio = call_args[0][1]  # second positional arg
-        assert passed_audio is audio, (
-            "accept_waveform should receive the numpy array directly, "
+        assert isinstance(passed_audio, np.ndarray), (
+            "accept_waveform should receive a numpy array directly, "
             "not a converted copy"
         )
 
@@ -180,7 +186,7 @@ class TestTranscribeNoNumpyToList:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.array([0.0, 0.1, 0.2, 0.3], dtype="float32")
+        audio = np.zeros(16000, dtype="float32")  # 1 second
         mock_sf.read.return_value = (audio, 16000)
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -191,8 +197,8 @@ class TestTranscribeNoNumpyToList:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = "test"
-        mock_stream.result.tokens = None
-        mock_stream.result.timestamps = None
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
 
         worker.transcribe("/tmp/audio.wav")
 
@@ -212,11 +218,8 @@ class TestTranscribeNoNumpyToList:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        # Stereo audio: 4 samples, 2 channels
-        stereo = np.array(
-            [[0.0, 0.1], [0.2, 0.3], [0.4, 0.5], [0.6, 0.7]],
-            dtype="float32",
-        )
+        # Stereo audio: 1 second, 2 channels
+        stereo = np.zeros((16000, 2), dtype="float32")
         mock_sf.read.return_value = (stereo, 16000)
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -227,8 +230,8 @@ class TestTranscribeNoNumpyToList:
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
         mock_stream.result.text = "test"
-        mock_stream.result.tokens = None
-        mock_stream.result.timestamps = None
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
 
         worker.transcribe("/tmp/stereo.wav")
 
@@ -239,6 +242,132 @@ class TestTranscribeNoNumpyToList:
             "Downmixed audio should remain a numpy array"
         )
         assert passed_audio.ndim == 1
+
+
+class TestAudioChunking:
+    """Tests for 28-second chunking to work around Whisper's 30-second limit.
+
+    sherpa-onnx Whisper silently discards audio beyond 30 seconds.  The
+    transcriber splits audio into 28-second chunks, transcribes each
+    independently, and offsets segment timestamps by chunk start time.
+    """
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_short_audio_single_chunk(self, mock_sf, mock_sherpa):
+        """Audio shorter than 28 seconds results in a single create_stream call."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        audio = np.zeros(16000 * 10, dtype="float32")  # 10 seconds
+        mock_sf.read.return_value = (audio, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        mock_stream = MagicMock()
+        mock_recognizer.create_stream.return_value = mock_stream
+        mock_stream.result.text = "test"
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
+
+        worker.transcribe("/tmp/audio.wav")
+        assert mock_recognizer.create_stream.call_count == 1
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_long_audio_multiple_chunks(self, mock_sf, mock_sherpa):
+        """Audio longer than 28 seconds results in multiple create_stream calls."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
+        mock_sf.read.return_value = (audio, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        mock_stream = MagicMock()
+        mock_recognizer.create_stream.return_value = mock_stream
+        mock_stream.result.text = "test"
+        mock_stream.result.segment_texts = None
+        mock_stream.result.segment_timestamps = None
+
+        worker.transcribe("/tmp/audio.wav")
+        # 60s / 28s = 3 chunks (28s + 28s + 4s)
+        assert mock_recognizer.create_stream.call_count == 3
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_chunk_segment_timestamps_offset(self, mock_sf, mock_sherpa):
+        """Segment timestamps from later chunks are offset by chunk start time."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        # 60s of audio → 3 chunks: 0-28s, 28-56s, 56-60s
+        audio = np.zeros(16000 * 60, dtype="float32")
+        mock_sf.read.return_value = (audio, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        # Return different mock results per call
+        streams = []
+        for i in range(3):
+            s = MagicMock()
+            s.result.text = f"chunk {i}"
+            s.result.segment_texts = [f"Segment {i}."]
+            s.result.segment_timestamps = [1.0]  # 1s into each chunk
+            streams.append(s)
+        mock_recognizer.create_stream.side_effect = streams
+
+        result = worker.transcribe("/tmp/audio.wav")
+        assert result is not None
+        # 3 segments, with timestamps offset by chunk start
+        assert len(result.segments) == 3
+        assert result.segments[0].start_time == 1.0       # 0 + 1
+        assert result.segments[1].start_time == 29.0      # 28 + 1
+        assert result.segments[2].start_time == 57.0      # 56 + 1
+        assert result.segments[0].text == "Segment 0."
+        assert result.segments[1].text == "Segment 1."
+        assert result.segments[2].text == "Segment 2."
+
+    @patch("transcriber.worker.sherpa_onnx")
+    @patch("transcriber.worker.sf")
+    def test_text_joined_across_chunks(self, mock_sf, mock_sherpa):
+        """Text from all chunks is joined with spaces."""
+        import numpy as np
+        from transcriber.worker import TranscriptionWorker
+
+        audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
+        mock_sf.read.return_value = (audio, 16000)
+
+        worker = TranscriptionWorker(model_path="/tmp/models")
+        mock_recognizer = MagicMock()
+        mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
+        worker.load_model()
+
+        streams = []
+        texts = ["Hello world.", "How are you.", "Goodbye."]
+        for t in texts:
+            s = MagicMock()
+            s.result.text = t
+            s.result.segment_texts = None
+            s.result.segment_timestamps = None
+            streams.append(s)
+        mock_recognizer.create_stream.side_effect = streams
+
+        result = worker.transcribe("/tmp/audio.wav")
+        assert result is not None
+        assert "Hello world." in result.text
+        assert "How are you." in result.text
+        assert "Goodbye." in result.text
 
 
 class TestDownloadModel:

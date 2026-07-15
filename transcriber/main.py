@@ -77,9 +77,9 @@ def _build_interleaved_transcript(db: Database, session_id: str) -> str:
         return "\n".join(lines) + "\n"
 
     # Fallback: per-speaker blocks using audio_files.transcript_text.
-    # This path is only hit when the recogniser didn't produce timestamps
-    # (e.g. model loaded without enable_token_timestamps). With timestamps
-    # enabled, the timestamped-segments path above is used instead.
+    # This path is only hit when the recogniser didn't produce segment
+    # timestamps (e.g. model loaded without enable_segment_timestamps).
+    # With timestamps enabled, the timestamped-segments path above is used.
     audio_files = db.get_audio_files(session_id)
     if not audio_files:
         return ""

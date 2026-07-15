@@ -80,18 +80,20 @@ class TranscriptionWorker:
         """Load the sherpa-onnx Whisper model. Call once at startup."""
         size = self.model_size
         try:
-            # enable_token_timestamps uses DTW on cross-attention weights to
-            # produce token-level start times in result.timestamps. Without
-            # this, result.timestamps is empty and _build_segments() returns
-            # an empty list, causing the transcript builder to fall back to
-            # untimestamped per-speaker blocks.
+            # enable_segment_timestamps uses Whisper's native <|0.00|> timestamp
+            # tokens to produce segment-level start times in result.segment_timestamps.
+            # Unlike enable_token_timestamps (which requires the ONNX model to be
+            # exported with cross-attention outputs for DTW), this works with any
+            # standard Whisper ONNX model. Without this, segment_timestamps is
+            # empty and _build_segments() returns an empty list, causing the
+            # transcript builder to fall back to untimestamped per-speaker blocks.
             self.recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
                 encoder=os.path.join(self.model_path, f"{size}-encoder.onnx"),
                 decoder=os.path.join(self.model_path, f"{size}-decoder.onnx"),
                 tokens=os.path.join(self.model_path, f"{size}-tokens.txt"),
                 num_threads=self.num_threads,
                 decoding_method="greedy_search",
-                enable_token_timestamps=True,
+                enable_segment_timestamps=True,
             )
             logger.info("Loaded sherpa-onnx Whisper model from %s", self.model_path)
 
@@ -102,10 +104,11 @@ class TranscriptionWorker:
     def transcribe(self, audio_path: str, hotwords: Optional[str] = None) -> Optional[TranscriptionResult]:
         """Transcribe an audio file. Returns TranscriptionResult or None on error.
 
-        The result contains the full text and a list of timestamped segments.
-        Segments are grouped by sentence boundaries (punctuation tokens) or
-        gaps in audio > 1 second. Each segment's start_time is the timestamp
-        of its first token.
+        sherpa-onnx Whisper only processes the first 30 seconds of audio and
+        silently discards the rest.  To handle longer recordings, we split the
+        audio into 28-second chunks, transcribe each independently, and offset
+        each chunk's segment timestamps by the chunk's start time so the final
+        merged segments are chronological across the entire file.
 
         Args:
             audio_path: Path to the WAV file to transcribe.
@@ -121,31 +124,51 @@ class TranscriptionWorker:
             if len(audio.shape) > 1:
                 audio = audio.mean(axis=1)
 
-            # Pass None (not "") when hotwords is empty — sherpa-onnx's C++
-            # create_stream() treats any non-None string as a request to
-            # apply contextual biasing, which crashes Whisper (non-transducer)
-            # models with a segfault after printing "Only transducer models
-            # support contextual biasing."  An empty string still enters the
-            # biasing code path; only None skips it safely.
-            stream = self.recognizer.create_stream(hotwords=hotwords or None)
-            # Pass the numpy array directly — sherpa-onnx's pybind11 bindings
-            # accept it via the buffer protocol without conversion.  Calling
-            # .tolist() would create ~28 million Python float objects for a
-            # 30-minute session (16 kHz × 1800 s), wasting both memory and CPU.
-            stream.accept_waveform(sample_rate, audio)
-            self.recognizer.decode_stream(stream)
+            # sherpa-onnx Whisper silently discards audio beyond 30 seconds.
+            # Chunk at 28s to stay safely under the limit with margin for
+            # sample-rate rounding.  Each chunk is transcribed independently;
+            # segment timestamps are offset by chunk_start so the merged
+            # result preserves chronological order across the full file.
+            chunk_samples = 28 * sample_rate
+            total_samples = len(audio)
+            all_text_parts: list[str] = []
+            all_segments: list[TranscriptSegment] = []
 
-            result = stream.result
-            text = result.text.strip()
+            offset = 0
+            while offset < total_samples:
+                chunk = audio[offset:offset + chunk_samples]
+                chunk_start_sec = offset / sample_rate
 
-            # Extract timestamped segments from token-level data.
-            # sherpa-onnx provides result.tokens (list of token strings)
-            # and result.timestamps (list of floats, seconds from start).
-            segments = self._build_segments(result)
+                if len(chunk) < sample_rate * 0.1:
+                    # Skip chunks shorter than 0.1s — too short to transcribe
+                    break
+
+                stream = self.recognizer.create_stream(hotwords=hotwords or None)
+                stream.accept_waveform(sample_rate, chunk)
+                self.recognizer.decode_stream(stream)
+
+                result = stream.result
+                chunk_text = result.text.strip()
+                if chunk_text:
+                    all_text_parts.append(chunk_text)
+
+                chunk_segments = self._build_segments(result)
+                # Offset each segment's start_time by the chunk's offset so
+                # timestamps are relative to the start of the full file.
+                for seg in chunk_segments:
+                    all_segments.append(TranscriptSegment(
+                        start_time=seg.start_time + chunk_start_sec,
+                        text=seg.text,
+                    ))
+
+                offset += chunk_samples
+
+            text = " ".join(all_text_parts)
+            segments = all_segments
 
             logger.debug(
-                "Transcribed %s: %d chars, %d segments",
-                audio_path, len(text), len(segments),
+                "Transcribed %s: %d chars, %d segments (chunked from %d samples)",
+                audio_path, len(text), len(segments), total_samples,
             )
             return TranscriptionResult(text=text, segments=segments)
 
@@ -155,56 +178,30 @@ class TranscriptionWorker:
 
     @staticmethod
     def _build_segments(result) -> list[TranscriptSegment]:
-        """Group token-level timestamps into sentence-like segments.
+        """Extract timestamped segments from sherpa-onnx segment-level data.
 
-        Tokens are grouped into segments by:
-        1. Sentence-ending punctuation (".", "?", "!") starts a new segment
-        2. A gap > 1 second between consecutive tokens starts a new segment
-
-        Each segment's start_time is the timestamp of its first token.
+        Uses result.segment_timestamps, result.segment_texts, and
+        result.segment_durations (populated when the model is loaded with
+        enable_segment_timestamps=True).  Each segment is already a
+        sentence-like chunk with a start time in seconds from the start
+        of the audio.
         """
-        tokens = getattr(result, "tokens", None)
-        timestamps = getattr(result, "timestamps", None)
+        segment_texts = getattr(result, "segment_texts", None)
+        segment_timestamps = getattr(result, "segment_timestamps", None)
 
-        # No timestamp data available — return empty list (caller falls
-        # back to per-speaker blocks).
-        if not tokens or not timestamps or len(tokens) != len(timestamps):
+        if not segment_texts or not segment_timestamps:
+            return []
+
+        if len(segment_texts) != len(segment_timestamps):
             return []
 
         segments: list[TranscriptSegment] = []
-        current_tokens: list[str] = []
-        current_start: float = 0.0
-        prev_time: float = 0.0
-        sentence_endings = {".", "?", "!", "。", "?", "!", "？", "！"}
-
-        for i, (token, ts) in enumerate(zip(tokens, timestamps)):
-            if not current_tokens:
-                current_start = ts
-
-            current_tokens.append(token)
-
-            # Check if this token ends a sentence or has a large gap before next
-            is_sentence_end = token.strip() in sentence_endings
-            is_last = i == len(tokens) - 1
-
-            if is_last:
-                next_ts = None
-            else:
-                next_ts = timestamps[i + 1]
-
-            gap = (next_ts - ts) if next_ts is not None else 0.0
-            large_gap = gap > 1.0
-
-            if is_sentence_end or is_last or large_gap:
-                seg_text = "".join(current_tokens).strip()
-                if seg_text:
-                    segments.append(TranscriptSegment(
-                        start_time=current_start, text=seg_text
-                    ))
-                current_tokens = []
-
-            prev_time = ts
-
+        for text, ts in zip(segment_texts, segment_timestamps):
+            cleaned = text.strip()
+            if cleaned:
+                segments.append(TranscriptSegment(
+                    start_time=float(ts), text=cleaned,
+                ))
         return segments
 
 
