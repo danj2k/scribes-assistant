@@ -271,10 +271,22 @@ def setup_commands(bot: commands.Bot):
         # Mark session as queued for transcription
         db.end_session(session_id)
 
-        await interaction.followup.send(
-            f"Recording stopped! Session `{session_id}` has been queued for transcription.\n"
-            "You'll receive the transcript here when it's ready.",
-        )
+        # Build the followup message.  When a dedicated transcript channel
+        # is configured, tell the user where to look instead of implying the
+        # current channel.
+        delivery_channel_id = bot.config.transcript_channel_id
+        if delivery_channel_id:
+            channel = bot.get_channel(delivery_channel_id)
+            channel_name = channel.name if channel else f"<#{delivery_channel_id}>"
+            await interaction.followup.send(
+                f"Recording stopped! Session `{session_id}` has been queued for transcription.\n"
+                f"You'll receive the transcript in **#{channel_name}** when it's ready.",
+            )
+        else:
+            await interaction.followup.send(
+                f"Recording stopped! Session `{session_id}` has been queued for transcription.\n"
+                "You'll receive the transcript here when it's ready.",
+            )
         bot.logger.info(f"Session {session_id} stopped and queued for transcription")
 
     # --- /status ---

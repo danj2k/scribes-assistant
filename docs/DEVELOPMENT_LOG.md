@@ -1329,3 +1329,13 @@ After deploying the transcriber hotwords fix, the transcriber produced output bu
 - `docs/DEVELOPMENT_LOG.md` — this entry.
 
 **Impact:** Transcripts now include timestamps (via token-level DTW alignment), speaker names appear on the same line as dialogue, and files end with a trailing newline. The bot can successfully pick up completed transcripts for delivery without `KeyError`.
+
+### Fix #15: `/stop` message references wrong channel
+
+**Problem:** When a dedicated transcript delivery channel is configured (`discord.transcript_channel_id`), the `/stop` followup says "You'll receive the transcript here when it's ready" — but the transcript is actually delivered to the configured channel, not the current one. This misleads the user.
+
+**Fix:** `bot/commands.py` `/stop` command now checks `bot.config.transcript_channel_id`. When set, it looks up the channel via `bot.get_channel()` and says "You'll receive the transcript in **#channel-name** when it's ready." Falls back to a `<#ID>` mention if the channel isn't in cache. When no delivery channel is configured, the original "here" message is used (the transcript goes to the current channel in that case, so "here" is accurate).
+
+**Tests:** 336 pass, no new test needed (message text is informational, not behavioural logic).
+
+**Documentation:** `docs/DEVELOPMENT_LOG.md` — this entry.
