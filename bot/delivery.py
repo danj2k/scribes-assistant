@@ -113,6 +113,7 @@ class DeliveryLoop:
             thread = await channel.create_thread(
                 name=f"Transcript — {session_id}",
                 auto_archive_duration=1440,  # 24 hours
+                type=discord.ChannelType.public_thread,
             )
             
             # Send the transcript in parts if needed (Discord 2000 char limit)

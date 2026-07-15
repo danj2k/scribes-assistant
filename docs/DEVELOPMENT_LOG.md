@@ -1,5 +1,18 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-15 — Fix: public thread delivery (private thread default)
+
+The delivery loop was creating private threads instead of public threads.
+py-cord's `TextChannel.create_thread()` defaults `type` to
+`ChannelType.private_thread` when no `message` argument is passed. Private
+threads are only visible to the bot and explicitly-added members — the
+transcript appeared to be "delivered" (the bot logged success and stored
+the thread ID) but was invisible to the user.
+
+Fix: explicitly pass `type=discord.ChannelType.public_thread` to
+`create_thread()`. Added regression test `test_deliver_creates_public_thread`
+that asserts `type` is present in the kwargs.
+
 ## 2026-07-15 — Fix: segment timestamps + 28s audio chunking + transcript formatting
 
 The transcriber was producing untimestamped transcripts with formatting

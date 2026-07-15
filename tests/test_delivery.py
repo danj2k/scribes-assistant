@@ -250,6 +250,32 @@ class TestDeliveryLoopDeliver:
         db.set_thread_id.assert_called_once_with("s1", str(mock_thread.id))
 
     @pytest.mark.asyncio
+    async def test_deliver_creates_public_thread(self, tmp_path):
+        """Threads must be public — py-cord defaults to private_thread when
+        no message is passed, which makes the transcript invisible to users."""
+        loop, bot, db, logger = _make_delivery_loop()
+        transcript_file = tmp_path / "transcript.txt"
+        transcript_file.write_text("Hello world")
+        session = {
+            "id": "s1",
+            "transcript_path": str(transcript_file),
+            "discord_channel_id": "123456",
+        }
+        mock_thread = AsyncMock()
+        mock_channel = MagicMock()
+        mock_channel.create_thread = AsyncMock(return_value=mock_thread)
+        bot.get_channel.return_value = mock_channel
+        bot.config.transcript_channel_id = None
+
+        await loop._deliver(session)
+
+        _, kwargs = mock_channel.create_thread.call_args
+        # py-cord defaults type to private_thread when no message is passed.
+        # We must explicitly pass type=public_thread so users can see it.
+        assert "type" in kwargs, "type must be explicitly passed to avoid private_thread default"
+        assert kwargs["type"] is not None
+
+    @pytest.mark.asyncio
     async def test_deliver_splits_long_transcript(self, tmp_path):
         """Transcripts over 2000 chars are split into multiple messages."""
         loop, bot, db, logger = _make_delivery_loop()

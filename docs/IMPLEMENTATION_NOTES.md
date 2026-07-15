@@ -60,7 +60,13 @@ SQLite supports WAL mode for concurrent reads. Both the bot and transcriber acce
 
 ### Delivery Loop Database Access (Bug #17)
 
-The delivery loop polls for sessions ready to be delivered (status = COMPLETE, transcript_path set, thread_id NULL). It previously accessed the database's private `_cursor()` context manager directly, coupling it to the database's internal implementation. It now calls the public `Database.get_sessions_for_delivery()` method instead, which returns a list of `{"id": session_id}` dicts ordered by `ended_at`. The delivery loop has no direct SQL access and no unnecessary commit after the SELECT query.
+The delivery loop polls for sessions ready to be delivered (status = COMPLETE, transcript_path set, thread_id NULL). It previously accessed the database's private `_cursor()` context manager directly, coupling it to the database's internal implementation. It now calls the public `Database.get_sessions_for_delivery()` method instead, which returns full row dicts (id, transcript_path, discord_channel_id) ordered by `ended_at`. The delivery loop has no direct SQL access and no unnecessary commit after the SELECT query.
+
+### Delivery Thread Visibility — Public, Not Private
+
+py-cord's `TextChannel.create_thread()` defaults `type` to `ChannelType.private_thread` when no `message` argument is passed. Private threads are invisible to all users except the bot and explicitly-added members. Since our delivery code calls `create_thread()` without a message (transcripts are posted as standalone threads, not attached to an existing message), the transcript was being posted to a private thread that no one could see.
+
+We must explicitly pass `type=discord.ChannelType.public_thread` to make the thread visible to all users in the channel.
 
 ### py-cord PR #3159 — DAVE Voice Reception Support
 
