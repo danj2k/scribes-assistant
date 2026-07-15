@@ -1140,3 +1140,27 @@ Despite the DAVE readiness wait confirming `dave_session.ready = True` within 0.
 - `docs/DEVELOPMENT_LOG.md` — this entry
 
 **Impact:** The bot now uses a pycord build that properly implements DAVE E2E decryption for voice reception. The 6 redundant monkey-patches have been removed, reducing maintenance burden. The 2 remaining patches are hasattr-guarded no-ops that will activate only if the specific bugs are still present in the PR build. Next step: deploy to deucalion and test with a real Discord voice channel.
+
+## 2026-07-15: Fix /stop interaction timeout and DB schema migration
+
+### Problems
+
+1. **`/stop` "The application did not respond"** — The `/stop` command called `interaction.response.send_message()` AFTER waiting up to 30 seconds for the recording callback to finish. Discord interactions expire after 3 seconds, so by the time the callback completed (or timed out), the interaction token was dead, producing `NotFound: 404 Not Found (error code: 10062): Unknown interaction`.
+
+2. **`table audio_files has no column named discord_user_id`** — The `audio_files` table on deucalion's production DB was created before the `discord_user_id` and `speaker_name` columns were added to the schema. `CREATE TABLE IF NOT EXISTS` does not add missing columns to an existing table, so the production DB was missing them.
+
+### Fixes
+
+1. **`bot/commands.py` `/stop` command** — Reordered to call `interaction.response.send_message()` immediately (before `stop_recording()` and the callback wait), then use `interaction.followup.send()` for the final result. This acknowledges the interaction within the 3-second window, then delivers the outcome as a followup.
+
+2. **`shared/database.py`** — Added `_migrate_schema()` method called after `_init_schema()`. Uses `ALTER TABLE ADD COLUMN` wrapped in try/except `sqlite3.OperationalError` to add `discord_user_id` and `speaker_name` to existing `audio_files` tables. This is idempotent — if the columns already exist, the OperationalError is caught and ignored.
+
+### Verification
+
+- 328/328 tests pass (0 warnings)
+
+### Documentation Updated
+
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+**Impact:** `/stop` now responds immediately and delivers the final result as a followup. The DB migration ensures the `audio_files` table has the `discord_user_id` and `speaker_name` columns regardless of when the DB was first created.

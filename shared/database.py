@@ -71,6 +71,28 @@ class Database:
                 );
                 """
             )
+        self._migrate_schema()
+
+    def _migrate_schema(self):
+        """Add columns that were introduced after the initial schema.
+
+        CREATE TABLE IF NOT EXISTS won't add columns to an existing table,
+        so databases created before a column was introduced are missing it.
+        We use ALTER TABLE ADD COLUMN (no-op if the column already exists,
+        caught via the duplicate-column error).
+        """
+        migrations = [
+            ("audio_files", "discord_user_id", "TEXT"),
+            ("audio_files", "speaker_name", "TEXT"),
+        ]
+        with self._cursor() as cur:
+            for table, column, coltype in migrations:
+                try:
+                    cur.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
 
     @contextmanager
     def _cursor(self):

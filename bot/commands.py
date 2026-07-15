@@ -214,6 +214,15 @@ def setup_commands(bot: commands.Bot):
 
         session_id = active["id"]
 
+        # Acknowledge the interaction immediately — Discord interactions
+        # expire after 3 seconds, but the recording callback (which writes
+        # WAV files and registers them in the DB) can take much longer.
+        # We'll send the final result as a followup.
+        await interaction.response.send_message(
+            f"Stopping recording for session `{session_id}`... "
+            "Processing audio files, please wait.",
+        )
+
         # Stop recording and disconnect
         vc = interaction.guild.voice_client
         if vc and vc.is_connected():
@@ -242,7 +251,7 @@ def setup_commands(bot: commands.Bot):
         # already called fail_session(). Inform the user and don't queue
         # for transcription.
         if audio_count == 0:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Recording stopped for session `{session_id}`, but no audio was captured "
                 "(nobody spoke). The session has been marked as failed — "
                 "no transcript will be generated.",
@@ -254,7 +263,7 @@ def setup_commands(bot: commands.Bot):
         # Mark session as queued for transcription
         db.end_session(session_id)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Recording stopped! Session `{session_id}` has been queued for transcription.\n"
             "You'll receive the transcript here when it's ready.",
         )
