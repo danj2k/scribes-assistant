@@ -177,6 +177,21 @@ class TestSessionManagement:
         assert ids == ["s1", "s2"]
 
 
+    def test_get_sessions_for_delivery_returns_transcript_path_and_channel(self, db):
+        """Returned dicts include transcript_path and discord_channel_id.
+
+        _deliver() accesses these keys, so they must be present in every
+        row returned by get_sessions_for_delivery().
+        """
+        _make_session(db, sid="s1", guild="111", channel="222")
+        db.end_session("s1")
+        db.set_transcript_path("s1", "/data/transcripts/s1.txt")
+        sessions = db.get_sessions_for_delivery()
+        assert len(sessions) == 1
+        assert sessions[0]["transcript_path"] == "/data/transcripts/s1.txt"
+        assert sessions[0]["discord_channel_id"] == "222"
+
+
 class TestAudioFiles:
     """Tests for audio file tracking."""
 

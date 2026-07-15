@@ -235,16 +235,20 @@ class Database:
         A session is deliverable when it has a transcript file and has not
         yet been posted to a thread (thread_id is NULL).  Ordered by
         ended_at so the oldest completed session is delivered first.
+
+        Returns full row dicts (not just id) because _deliver() needs
+        transcript_path and discord_channel_id.
         """
         with self._cursor() as cur:
             cur.execute(
-                """SELECT id FROM sessions
+                """SELECT id, transcript_path, discord_channel_id
+                   FROM sessions
                    WHERE status = ? AND transcript_path IS NOT NULL
                      AND thread_id IS NULL
                    ORDER BY ended_at""",
                 (STATUS_COMPLETE,),
             )
-            return [{"id": row[0]} for row in cur.fetchall()]
+            return [dict(r) for r in cur.fetchall()]
 
     def set_transcript_path(self, session_id: str, transcript_path: str):
         """Set the transcript file path and mark session as complete."""

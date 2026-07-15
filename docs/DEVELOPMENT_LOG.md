@@ -1,5 +1,28 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-15 — Fix: get_sessions_for_delivery missing columns (KeyError on delivery)
+
+The transcriber successfully produced a transcript and wrote it to
+`/data/transcripts/2026-07-15_16-55-50.txt`, but the bot's delivery loop
+crashed with a `KeyError` when trying to pick it up.
+
+Root cause: `get_sessions_for_delivery()` in `shared/database.py` only
+selected the `id` column: `SELECT id FROM sessions ...`. The delivery
+loop's `_deliver()` method in `bot/delivery.py` accesses
+`session["transcript_path"]` and `session["discord_channel_id"]` from the
+returned dict — both keys were missing, causing `KeyError`.
+
+Why the tests missed it: `tests/test_delivery.py` mocks the DB entirely,
+constructing session dicts manually with all keys present.
+`tests/test_database.py` tested `get_sessions_for_delivery()` but only
+asserted on `s["id"]`, never checking that `transcript_path` or
+`discord_channel_id` were present in the returned dicts.
+
+Fix: changed the SELECT to `SELECT id, transcript_path, discord_channel_id`
+and return `dict(r)` for each row (matching the pattern used by other
+query methods in the file). Added a regression test that asserts both
+keys are present in the returned dicts.
+
 ## 2026-07-15 — Fix: sherpa-onnx hotwords segfault on empty lexicon
 
 The transcriber was crashing and restarting every time it tried to transcribe
