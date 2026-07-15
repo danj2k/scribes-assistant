@@ -1,5 +1,27 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-15 — Fix: sherpa-onnx hotwords segfault on empty lexicon
+
+The transcriber was crashing and restarting every time it tried to transcribe
+audio. The bot logs showed "Only RTCP sender reports (type=200) and zero RTP
+audio packets", leading to a wrong hypothesis that no audio was being recorded.
+The user pointed out that the extracted WAV file (`/workspace/danj2k (Danj).wav`)
+contained real audio — 30.6 seconds of clear speech at 48kHz/16-bit/stereo.
+
+Root cause: `sherpa_onnx.OfflineRecognizer.create_stream(hotwords="")` crashes
+with a segfault on Whisper (non-transducer) models. The C++ code prints "Only
+transducer models support contextual biasing" and then dies. This happens when
+the lexicon is empty — `build_hotwords([])` returns `""`, which is passed to
+`create_stream()`. sherpa-onnx's Python wrapper only skips the biasing code path
+when `hotwords is None`; any non-None string (including `""`) enters the C++
+biasing path. The `restart: unless-stopped` Docker policy silently restarted the
+container on every crash, masking the segfault as a "worker restarted" log line.
+
+Fix: `transcriber/worker.py` now passes `hotwords or None` to
+`create_stream()`, converting empty strings to `None`. Updated test
+`test_transcribe_no_hotwords_when_empty_string` to assert `hotwords=None`
+instead of `hotwords=""`. Updated KNOWN_ISSUES.md and IMPLEMENTATION_NOTES.md.
+
 ## 2025-07-08 — Project Inception
 
 - Created project repository structure

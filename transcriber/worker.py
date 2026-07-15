@@ -115,7 +115,13 @@ class TranscriptionWorker:
             if len(audio.shape) > 1:
                 audio = audio.mean(axis=1)
 
-            stream = self.recognizer.create_stream(hotwords=hotwords)
+            # Pass None (not "") when hotwords is empty — sherpa-onnx's C++
+            # create_stream() treats any non-None string as a request to
+            # apply contextual biasing, which crashes Whisper (non-transducer)
+            # models with a segfault after printing "Only transducer models
+            # support contextual biasing."  An empty string still enters the
+            # biasing code path; only None skips it safely.
+            stream = self.recognizer.create_stream(hotwords=hotwords or None)
             # Pass the numpy array directly — sherpa-onnx's pybind11 bindings
             # accept it via the buffer protocol without conversion.  Calling
             # .tolist() would create ~28 million Python float objects for a

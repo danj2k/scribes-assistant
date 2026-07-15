@@ -43,7 +43,10 @@ class TestTranscriptionWorkerHotwords:
             w.recognizer.create_stream.assert_called_once_with(hotwords=None)
 
     def test_transcribe_no_hotwords_when_empty_string(self):
-        """create_stream called with empty hotwords string."""
+        """Empty hotwords string is converted to None — sherpa-onnx's C++
+        create_stream segfaults on Whisper models when hotwords is a non-None
+        string (even ""), because it enters the contextual biasing code path
+        which is only valid for transducer models."""
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
@@ -56,7 +59,7 @@ class TestTranscriptionWorkerHotwords:
 
             w.transcribe("/tmp/test.wav", hotwords="")
 
-            w.recognizer.create_stream.assert_called_once_with(hotwords="")
+            w.recognizer.create_stream.assert_called_once_with(hotwords=None)
 
 
 class TestTranscriberCorrectText:

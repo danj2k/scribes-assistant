@@ -26,6 +26,8 @@ The lexicon improves transcription quality through two independent mechanisms:
 **Stage 1: Hotwords bias (before transcription)**
 The lexicon terms are formatted by `build_hotwords()` into a forward-slash separated string: `"Term1/Term2/Term3"`. This is passed to sherpa-onnx via `create_stream(hotwords=...)`. Hotwords are a hard decoding bias — the model is strongly biased toward recognising these terms during transcription. Capped at 100 terms to stay within sherpa-onnx token limits.
 
+**Empty hotwords → None:** When the lexicon is empty, `build_hotwords([])` returns `""`. This must NOT be passed to `create_stream()` as-is — sherpa-onnx's Python wrapper only skips the C++ contextual biasing code path when `hotwords is None`. An empty string (`""`) enters the biasing path, which prints "Only transducer models support contextual biasing" and segfaults on Whisper (non-transducer) models. The fix in `transcriber/worker.py` passes `hotwords or None` to `create_stream()`, converting `""` to `None`.
+
 **Stage 2: Fuzzy post-correction (after transcription, transcriber side)**
 After each audio file is transcribed, `transcriber/main.py`'s `_correct_text()` applies a three-stage correction pipeline to every word in each segment:
 
