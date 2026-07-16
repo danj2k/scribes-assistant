@@ -268,3 +268,43 @@ class TestConfigValidate:
         errors = c.validate(cfg_path)
         assert any(cfg_path in err for err in errors)
 
+
+class TestRecordingRetentionConfig:
+    """Tests for recording retention configuration."""
+
+    def test_retention_days_default(self, tmp_path):
+        """recording_retention_days defaults to 8."""
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.recording_retention_days == 8
+
+    def test_retention_days_custom(self, tmp_path):
+        """recording_retention_days reads from recording.retention_days."""
+        _write_yaml(tmp_path / "cfg.yaml", {"recording": {"retention_days": 30}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.recording_retention_days == 30
+
+    def test_retention_days_zero(self, tmp_path):
+        """retention_days=0 means keep forever (no purge)."""
+        _write_yaml(tmp_path / "cfg.yaml", {"recording": {"retention_days": 0}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.recording_retention_days == 0
+
+    def test_purge_interval_default(self, tmp_path):
+        """purge_interval_hours defaults to 6."""
+        _write_yaml(tmp_path / "cfg.yaml", {})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.purge_interval_hours == 6
+
+    def test_purge_interval_custom(self, tmp_path):
+        """purge_interval_hours reads from recording.purge_interval_hours."""
+        _write_yaml(tmp_path / "cfg.yaml", {"recording": {"purge_interval_hours": 12}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.purge_interval_hours == 12
+
+    def test_purge_interval_zero(self, tmp_path):
+        """purge_interval_hours=0 means startup-only sweep."""
+        _write_yaml(tmp_path / "cfg.yaml", {"recording": {"purge_interval_hours": 0}})
+        c = Config(str(tmp_path / "cfg.yaml"))
+        assert c.purge_interval_hours == 0
+

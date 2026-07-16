@@ -119,56 +119,66 @@ class TranscriptionWorker:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
         try:
-            audio, sample_rate = sf.read(audio_path, dtype="float32")
+            # Stream the audio from disk in 28-second chunks rather than
+            # reading the entire file into memory.  A 3-hour stereo WAV at
+            # 48 kHz/16-bit is ~2 GB on disk and ~4 GB as float32 in RAM;
+            # loading it whole risks OOM on a constrained server.  Using
+            # sf.SoundFile we read only one chunk (~5 MB) at a time,
+            # regardless of file length.
+            with sf.SoundFile(audio_path) as sf_file:
+                sample_rate = sf_file.samplerate
+                # sherpa-onnx Whisper silently discards audio beyond 30
+                # seconds.  Chunk at 28s to stay safely under the limit
+                # with margin for sample-rate rounding.  Each chunk is
+                # transcribed independently; segment timestamps are offset
+                # by chunk_start so the merged result preserves
+                # chronological order across the full file.
+                chunk_samples = 28 * sample_rate
+                total_frames = len(sf_file)
+                all_text_parts: list[str] = []
+                all_segments: list[TranscriptSegment] = []
 
-            if len(audio.shape) > 1:
-                audio = audio.mean(axis=1)
+                frame_offset = 0
+                while frame_offset < total_frames:
+                    sf_file.seek(frame_offset)
+                    chunk = sf_file.read(frames=chunk_samples, dtype="float32")
 
-            # sherpa-onnx Whisper silently discards audio beyond 30 seconds.
-            # Chunk at 28s to stay safely under the limit with margin for
-            # sample-rate rounding.  Each chunk is transcribed independently;
-            # segment timestamps are offset by chunk_start so the merged
-            # result preserves chronological order across the full file.
-            chunk_samples = 28 * sample_rate
-            total_samples = len(audio)
-            all_text_parts: list[str] = []
-            all_segments: list[TranscriptSegment] = []
+                    # Downmix stereo to mono after reading the chunk
+                    if chunk.ndim > 1:
+                        chunk = chunk.mean(axis=1)
 
-            offset = 0
-            while offset < total_samples:
-                chunk = audio[offset:offset + chunk_samples]
-                chunk_start_sec = offset / sample_rate
+                    chunk_start_sec = frame_offset / sample_rate
 
-                if len(chunk) < sample_rate * 0.1:
-                    # Skip chunks shorter than 0.1s — too short to transcribe
-                    break
+                    if len(chunk) < sample_rate * 0.1:
+                        # Skip chunks shorter than 0.1s — too short to transcribe
+                        break
 
-                stream = self.recognizer.create_stream(hotwords=hotwords or None)
-                stream.accept_waveform(sample_rate, chunk)
-                self.recognizer.decode_stream(stream)
+                    stream = self.recognizer.create_stream(hotwords=hotwords or None)
+                    stream.accept_waveform(sample_rate, chunk)
+                    self.recognizer.decode_stream(stream)
 
-                result = stream.result
-                chunk_text = result.text.strip()
-                if chunk_text:
-                    all_text_parts.append(chunk_text)
+                    result = stream.result
+                    chunk_text = result.text.strip()
+                    if chunk_text:
+                        all_text_parts.append(chunk_text)
 
-                chunk_segments = self._build_segments(result)
-                # Offset each segment's start_time by the chunk's offset so
-                # timestamps are relative to the start of the full file.
-                for seg in chunk_segments:
-                    all_segments.append(TranscriptSegment(
-                        start_time=seg.start_time + chunk_start_sec,
-                        text=seg.text,
-                    ))
+                    chunk_segments = self._build_segments(result)
+                    # Offset each segment's start_time by the chunk's offset
+                    # so timestamps are relative to the start of the full file.
+                    for seg in chunk_segments:
+                        all_segments.append(TranscriptSegment(
+                            start_time=seg.start_time + chunk_start_sec,
+                            text=seg.text,
+                        ))
 
-                offset += chunk_samples
+                    frame_offset += chunk_samples
 
             text = " ".join(all_text_parts)
             segments = all_segments
 
             logger.debug(
-                "Transcribed %s: %d chars, %d segments (chunked from %d samples)",
-                audio_path, len(text), len(segments), total_samples,
+                "Transcribed %s: %d chars, %d segments (chunked from %d frames)",
+                audio_path, len(text), len(segments), total_frames,
             )
             return TranscriptionResult(text=text, segments=segments)
 

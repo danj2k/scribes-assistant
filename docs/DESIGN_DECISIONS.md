@@ -206,3 +206,65 @@ file-based and mounted separately at `/run/secrets/`.
 
 **Impact**: Both containers need `pyyaml` as a dependency. A
 `config.yaml.example` is provided with documented defaults.
+
+---
+
+## 12. Recording Retention: Automatic WAV Purge (2026-07-16)
+
+**Decision**: Automatically delete raw WAV recording files after a
+configurable retention period (default 8 days), keeping transcripts
+indefinitely.
+
+**Context**: Recordings are large — ~11.5 MB/min per speaker at
+48 kHz/16-bit/stereo. A weekly 3-hour 5-player D&D session produces
+~10 GB of WAV files. Without purging, disk usage grows by ~40 GB/month.
+Transcripts (.txt) are tens of KB and have no storage impact, so they
+are retained permanently for historical reference.
+
+**Design**:
+- The purge sweep runs as a background `asyncio` task in the bot
+  container, started in `on_ready` alongside the delivery loop.
+- An immediate sweep runs on startup, then periodic sweeps every
+  `recording.purge_interval_hours` (default 6 hours). Setting the
+  interval to 0 disables periodic sweeps (startup-only).
+- Age is determined from `sessions.started_at` in the database. If a
+  session directory is not in the DB (e.g. orphaned from a crash), the
+  directory's modification time is used as a fallback.
+- Purged `audio_files` rows are marked `status='purged'` so the
+  transcriber does not try to reopen deleted files. Session rows and
+  transcript paths are kept intact.
+
+**Config**:
+```yaml
+recording:
+  retention_days: 8        # 0 = keep forever (no purge)
+  purge_interval_hours: 6  # 0 = only on startup
+```
+
+**Impact**: Disk usage is bounded — old recordings are reclaimed
+automatically. Users keep access to all transcripts. The retention
+period is long enough to re-transcribe a recording if needed (e.g.
+after a lexicon update) within the first week, after which only the
+transcript remains.
+
+---
+
+## 13. Transcriber Audio Reading: Block-Based I/O (2026-07-16)
+
+**Decision**: Read WAV files in fixed-size blocks (~28 seconds) via
+`sf.SoundFile` rather than loading the entire file into memory.
+
+**Context**: The previous approach used `sf.read(audio_path,
+dtype="float32")` which loads the entire file into RAM. A 3-hour stereo
+48 kHz recording is ~4 GB — exceeding the container's memory for long
+sessions and risking OOM kills.
+
+**Design**: `sf.SoundFile` opens only the WAV header (cheap), then
+`seek()` + `read(frames=chunk_samples)` pulls one 28-second chunk at a
+time. Each chunk is downmixed to mono inline via `chunk.mean(axis=1)`
+and fed directly to `stream.accept_waveform()`. Peak memory is one
+chunk (~5 MB) regardless of file length.
+
+**Impact**: The transcriber can handle arbitrarily long recordings
+without memory pressure. The 28-second chunk size matches the existing
+Whisper chunking window, so no additional splitting logic is needed.

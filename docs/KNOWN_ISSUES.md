@@ -16,6 +16,8 @@
 - **Recording filenames use Discord display names (fixed)**: py-cord keys `sink.audio_data` by `User`/`Member` objects, not numeric IDs. The recording callback iterates `sink.audio_data.items()` and uses `str(user_obj)` (the display name) for the filename. Discord display names can contain slashes and other path-unsafe characters — e.g. `llenikcud (Duckinell/DM)` caused the `/` to be interpreted as a path separator, creating a spurious directory `llenikcud (Duckinell/` with `DM).wav` inside it. Fixed in `bot/commands.py` with `_sanitize_filename()` which replaces `<>:"/\|?*\0` with underscores, strips leading/trailing spaces and dots, and collapses repeated underscores. The unsanitised display name is still stored in the DB as `speaker_name` for transcript output.
 - **libopus Docker dependency**: The bot Dockerfile installs `libopus0` via apt-get because `python:3.11-slim` omits it. py-cord loads this shared library via ctypes at runtime for Opus decoding. If the package is removed or the base image changes, recording will fail with `OpusNotLoaded`.
 
+- **Whole-file audio read (fixed)**: `transcribe()` previously loaded the entire WAV file into memory via `sf.read(audio_path, dtype="float32")`. A 3-hour stereo 48 kHz recording allocates ~4 GB of RAM. Replaced with block-based reading via `sf.SoundFile` context manager — `seek()` + `read(frames=chunk_samples)` pulls one 28-second chunk at a time, downmixed to mono inline. Peak memory drops from ~4 GB to ~5 MB.
+
 ## Future Considerations
 
 - Campaign wiki integration (mentioned in design doc as potential extension)

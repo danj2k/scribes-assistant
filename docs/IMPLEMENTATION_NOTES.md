@@ -289,6 +289,42 @@ Calling `.tolist()` would convert the compact C-backed array into a list of indi
 
 After stereo-to-mono downmix (`audio.mean(axis=1)`), the result is still a numpy array and is passed through unchanged.
 
+### Streaming Audio Read (Block-Based I/O)
+
+Previously, `transcribe()` loaded the entire WAV file into memory via `sf.read(audio_path, dtype="float32")`. For a 3-hour stereo 48 kHz recording (two speakers, 16-bit), this allocates ~4 GB of RAM — more than the Docker container's available memory for long sessions.
+
+The transcriber now uses `sf.SoundFile` as a context manager with block-based reading:
+
+1. Opens the file with `sf.SoundFile(audio_path)` — reads only the WAV header, not the audio data.
+2. Seeks to the current chunk offset: `f.seek(offset)`.
+3. Reads one 28-second chunk at a time: `f.read(frames=chunk_samples, dtype="float32")`.
+4. Downmixes to mono inline: `chunk.mean(axis=1)` if `chunk.ndim > 1`.
+5. Passes the chunk to `stream.accept_waveform()` immediately, then advances `offset += chunk_samples`.
+
+Peak memory drops from ~4 GB (whole file) to ~5 MB (one 28-second chunk at 48 kHz mono float32). The chunk size is `28 * sample_rate` samples — the same 28-second segment length used for Whisper's 30-second processing window.
+
+### Recording Retention (Automatic Purge)
+
+Recordings are large (~11.5 MB/min per speaker at 48 kHz/16-bit/stereo). A weekly 3-hour 5-player D&D session accumulates ~10 GB of WAV files per session, ~40 GB/month. Without automatic purging, the Docker volume fills up within weeks.
+
+The retention module (`bot/retention.py`) runs as a background task in the bot container:
+
+1. **Startup sweep** — on `on_ready`, immediately purges old recordings.
+2. **Periodic sweep** — every `recording.purge_interval_hours` (default 6 hours), repeats the sweep. Set to 0 for startup-only.
+
+Age is determined from the database `sessions.started_at` column (ISO 8601 UTC) when available, falling back to the directory's modification time for orphaned directories not in the database (e.g. from a crash before the DB row was written).
+
+Purging deletes the entire session directory (`/data/recordings/{session_id}/`) and marks all `audio_files` rows for that session as `purged` in the database. The `sessions` row and `transcript_path` are kept intact — transcripts are tiny (tens of KB) and retained indefinitely for historical reference.
+
+Configuration in `config.yaml`:
+```yaml
+recording:
+  retention_days: 8        # 0 = keep forever (no purge)
+  purge_interval_hours: 6  # 0 = only on startup
+```
+
+Failures during purging (permission errors, locked files) are logged as warnings and do not crash the sweep — the remaining directories are still processed.
+
 
 ### Transcript Delivery
 

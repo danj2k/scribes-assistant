@@ -38,6 +38,17 @@ session:
   # Seconds of silence before auto-ending a session when bot is alone in voice channel
   idle_timeout: 60
 
+# Recording retention
+recording:
+  # Days to keep WAV recordings before automatic purge.
+  # 0 = keep forever (no retention). Transcripts (.txt) are always kept —
+  # only the large WAV audio files are purged.
+  # At 48 kHz/16-bit/stereo, expect ~11.5 MB/min per speaker (~420 MB/hour).
+  retention_days: 8
+  # How often to run the purge sweep, in hours.
+  # 0 = only purge once on bot startup (no periodic sweep).
+  purge_interval_hours: 6
+
 # Transcriber settings
 transcriber:
   # Seconds between queue polling cycles

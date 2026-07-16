@@ -157,9 +157,12 @@ class TestHeartbeatWriting:
             bot.logger = MagicMock()
             bot._heartbeat_file = Path("/tmp/test_on_ready_heartbeat")
             bot._heartbeat_task = None
+            bot._retention_task = None
             bot._write_heartbeat = AsyncMock()
             bot.sync_commands = AsyncMock()
             bot.delivery_loop = None
+            bot.config = MagicMock()
+            bot.db = MagicMock()
 
             # Patch read-only properties from commands.Bot
             with patch.object(type(bot), "user", new_callable=PropertyMock,
@@ -179,8 +182,9 @@ class TestHeartbeatWriting:
 
             # Should have written heartbeat immediately
             bot._write_heartbeat.assert_awaited_once()
-            # Should have started the heartbeat loop task
-            assert len(created_tasks) == 1
+            # Should have started the heartbeat loop task and the
+            # retention sweep task (2 tasks total).
+            assert len(created_tasks) == 2
 
     def test_heartbeat_task_not_restarted_if_running(self):
         """on_ready does not restart heartbeat if task is already running."""
@@ -193,6 +197,9 @@ class TestHeartbeatWriting:
             bot._write_heartbeat = AsyncMock()
             bot.sync_commands = AsyncMock()
             bot.delivery_loop = None
+            bot.config = MagicMock()
+            bot.db = MagicMock()
+            bot._retention_task = None
 
             # Simulate an already-running task
             mock_task = MagicMock()
@@ -208,12 +215,12 @@ class TestHeartbeatWriting:
 
                 # Close any coroutines that create_task captured but
                 # didn't actually schedule (since create_task is mocked).
-                if mock_create.called:
-                    coro = mock_create.call_args.args[0]
-                    coro.close()
+                for call in mock_create.call_args_list:
+                    call.args[0].close()
 
-            # Should NOT have created a new task
-            mock_create.assert_not_called()
+            # Should NOT have created a heartbeat task (already running),
+            # but SHOULD have created the retention task.
+            assert mock_create.call_count == 1
 
 
 class TestTranscriberHealthcheck:

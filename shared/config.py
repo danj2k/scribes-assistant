@@ -29,6 +29,14 @@ _DEFAULTS = {
     "session": {
         "idle_timeout": 60,
     },
+    "recording": {
+        # Days to keep WAV recordings before automatic purge.
+        # 0 = keep forever (no retention). Transcripts (tiny .txt files)
+        # are kept indefinitely regardless of this setting.
+        "retention_days": 8,
+        # How often to run the purge sweep, in hours (0 = only on startup).
+        "purge_interval_hours": 6,
+    },
     "transcriber": {
         "poll_interval": 10,
         "threads": 0,
@@ -164,6 +172,22 @@ class Config:
     def idle_timeout(self) -> int:
         """Seconds of idle time before auto-ending a session."""
         return int(self.get("session.idle_timeout", 60))
+
+    # -- Recording retention properties ---------------------------------------
+
+    @property
+    def recording_retention_days(self) -> int:
+        """Days to keep WAV recordings before automatic purge.
+
+        0 means keep forever (no retention).  Transcripts are tiny and
+        kept indefinitely regardless of this setting.
+        """
+        return int(self.get("recording.retention_days", 8))
+
+    @property
+    def purge_interval_hours(self) -> int:
+        """Hours between purge sweeps.  0 means only purge on startup."""
+        return int(self.get("recording.purge_interval_hours", 6))
 
     # -- Transcriber properties -----------------------------------------------
 

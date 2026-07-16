@@ -4,6 +4,9 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from shared.lexicon import Lexicon, build_hotwords
 from shared.config import Config
 
+# Re-use the FakeSoundFile helper from the worker test module
+from tests.test_transcriber_worker import _make_mock_sf
+
 
 class TestTranscriptionWorkerHotwords:
     """Test that hotwords are passed to create_stream()."""
@@ -16,7 +19,7 @@ class TestTranscriptionWorkerHotwords:
              patch.object(TranscriptionWorker, "load_model"):
             # Short audio (< 28s) → single chunk, one create_stream call
             mock_audio = np.zeros(16000, dtype="float32")
-            mock_sf.read.return_value = (mock_audio, 16000)
+            mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
 
             w = TranscriptionWorker("/tmp/model")
             w.recognizer = MagicMock()
@@ -34,7 +37,7 @@ class TestTranscriptionWorkerHotwords:
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
             mock_audio = np.zeros(16000, dtype="float32")
-            mock_sf.read.return_value = (mock_audio, 16000)
+            mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
 
             w = TranscriptionWorker("/tmp/model")
             w.recognizer = MagicMock()
@@ -53,7 +56,7 @@ class TestTranscriptionWorkerHotwords:
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
             mock_audio = np.zeros(16000, dtype="float32")
-            mock_sf.read.return_value = (mock_audio, 16000)
+            mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
 
             w = TranscriptionWorker("/tmp/model")
             w.recognizer = MagicMock()

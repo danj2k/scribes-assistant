@@ -6,6 +6,50 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+def _make_mock_sf(audio_data, sample_rate=16000):
+    """Create a mock soundfile module that emulates sf.SoundFile streaming.
+
+    The old code called sf.read(path, dtype=...) which returned (audio, sr).
+    The streaming code uses sf.SoundFile(path) as a context manager, then
+    reads chunks via .read(frames=N, dtype=...).  This helper creates a
+    MagicMock that emulates that interface, yielding the given audio_data
+    in chunks of the requested size.
+
+    For mono audio, audio_data should be a 1-D numpy array.
+    For stereo audio, audio_data should be a 2-D numpy array (samples, 2).
+    """
+    import numpy as np
+
+    class FakeSoundFile:
+        """Emulates the sf.SoundFile context-manager interface."""
+        def __init__(self, path):
+            self._audio = audio_data
+            self.samplerate = sample_rate
+            self._pos = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def __len__(self):
+            return len(self._audio)
+
+        def seek(self, offset):
+            self._pos = offset
+
+        def read(self, frames=None, dtype=None):
+            end = self._pos + frames if frames else len(self._audio)
+            chunk = self._audio[self._pos:end]
+            self._pos = end
+            return chunk.astype(dtype) if dtype else chunk
+
+    mock_sf = MagicMock()
+    mock_sf.SoundFile = FakeSoundFile
+    return mock_sf
+
+
 class TestWorkerInit:
     """Tests for TranscriptionWorker initialization."""
 
@@ -93,7 +137,7 @@ class TestWorkerTranscribe:
 
         # Short audio (< 28s) → single chunk, one create_stream call
         audio = np.zeros(16000, dtype="float32")  # 1 second
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -120,7 +164,7 @@ class TestWorkerTranscribe:
         from transcriber.worker import TranscriptionWorker
 
         audio = np.zeros(16000, dtype="float32")  # 1 second
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -154,7 +198,7 @@ class TestTranscribeNoNumpyToList:
         from transcriber.worker import TranscriptionWorker
 
         audio = np.zeros(16000, dtype="float32")  # 1 second
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -187,7 +231,7 @@ class TestTranscribeNoNumpyToList:
         from transcriber.worker import TranscriptionWorker
 
         audio = np.zeros(16000, dtype="float32")  # 1 second
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -220,7 +264,7 @@ class TestTranscribeNoNumpyToList:
 
         # Stereo audio: 1 second, 2 channels
         stereo = np.zeros((16000, 2), dtype="float32")
-        mock_sf.read.return_value = (stereo, 16000)
+        mock_sf.SoundFile = _make_mock_sf(stereo).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -260,7 +304,7 @@ class TestAudioChunking:
         from transcriber.worker import TranscriptionWorker
 
         audio = np.zeros(16000 * 10, dtype="float32")  # 10 seconds
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -284,7 +328,7 @@ class TestAudioChunking:
         from transcriber.worker import TranscriptionWorker
 
         audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -310,7 +354,7 @@ class TestAudioChunking:
 
         # 60s of audio → 3 chunks: 0-28s, 28-56s, 56-60s
         audio = np.zeros(16000 * 60, dtype="float32")
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
@@ -346,7 +390,7 @@ class TestAudioChunking:
         from transcriber.worker import TranscriptionWorker
 
         audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
-        mock_sf.read.return_value = (audio, 16000)
+        mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()

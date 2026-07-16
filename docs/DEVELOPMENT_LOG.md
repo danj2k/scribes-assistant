@@ -1,5 +1,58 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-16 — Fix: streaming audio read + recording retention purge
+
+Two related improvements to storage and memory: block-based audio reading
+in the transcriber and automatic purge of old recording WAV files in the bot.
+
+**Streaming audio read (transcriber/worker.py):**
+
+`transcribe()` previously loaded the entire WAV file into memory via
+`sf.read(audio_path, dtype="float32")`. For a 3-hour stereo 48 kHz recording
+this allocates ~4 GB of RAM — more than the container has available for long
+sessions. Replaced with `sf.SoundFile` as a context manager with block-based
+reading: open the file (header only), seek to the chunk offset, read one
+28-second chunk at a time with `f.read(frames=chunk_samples, dtype="float32")`,
+downmix to mono inline with `chunk.mean(axis=1)`, and feed directly to
+`stream.accept_waveform()`. Peak memory drops from ~4 GB to ~5 MB.
+
+Tests: all `mock_sf.read.return_value` mocks in `test_transcriber_worker.py`
+and `test_lexicon_integration.py` converted to a `_make_mock_sf` helper that
+mocks `sf.SoundFile` as a context manager with `seek()` and `read(frames=...)`.
+390/390 pass.
+
+**Recording retention (bot/retention.py, shared/config.py, bot/main.py):**
+
+No recording cleanup existed — only log rotation. WAV files accumulated
+indefinitely (~10 GB per weekly 3-hour 5-player session, ~40 GB/month). Added
+a retention module that runs as a background task in the bot container:
+
+- `purge_old_recordings(recordings_dir, retention_days, db)` — scans session
+  directories under `/data/recordings/`, checks age from `sessions.started_at`
+  (falls back to directory mtime for orphaned dirs), deletes the directory if
+  older than the retention period, and marks `audio_files` rows as `purged`.
+  Session rows and transcript `.txt` files are kept (tiny, retained indefinitely).
+- `retention_loop(config, db)` — async task: immediate sweep on startup, then
+  periodic sweep every `recording.purge_interval_hours` (default 6h, 0 = startup
+  only).
+
+Config: new `recording` section in `shared/config.py` defaults and
+`config.yaml.example`:
+```yaml
+recording:
+  retention_days: 8        # 0 = keep forever (no purge)
+  purge_interval_hours: 6  # 0 = only on startup
+```
+
+Wiring: `bot/main.py` imports `retention_loop`, starts it in `on_ready` after
+the delivery loop, and cancels it in the SIGTERM shutdown handler alongside
+`DeliveryLoop.stop()`.
+
+Tests: 22 new tests in `test_retention.py` (purge logic, timestamp parsing,
+loop behaviour, disabled retention, DB failure resilience). 6 new config tests
+in `test_config.py` (default, custom, zero=keep-forever, interval). 2 healthcheck
+tests updated for the new background task. 390/390 pass.
+
 ## 2026-07-16 — Fix: multi-speaker temporal alignment (TimestampedWaveSink)
 
 Multi-speaker transcripts had dialogue in the wrong order — questions appeared

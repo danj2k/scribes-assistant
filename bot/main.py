@@ -76,6 +76,7 @@ from bot.commands import setup_commands
 from bot.error_handler import setup_error_handler
 from bot.voice import on_voice_state_update
 from bot.delivery import DeliveryLoop
+from bot.retention import retention_loop
 
 logger = logging.getLogger("scribes.bot")
 
@@ -97,6 +98,7 @@ class ScribesBot(commands.Bot):
         self.delivery_loop: DeliveryLoop | None = None
         self._heartbeat_file = Path("/data/bot.heartbeat")
         self._heartbeat_task: asyncio.Task | None = None
+        self._retention_task: asyncio.Task | None = None
 
     async def _write_heartbeat(self):
         """Write the current timestamp to the heartbeat file.
@@ -139,6 +141,18 @@ class ScribesBot(commands.Bot):
             self.delivery_loop.start()
             logger.info("Transcript delivery loop started")
 
+        # Start the recording retention sweep — purges old WAV files
+        # to reclaim disk space.  Runs immediately then periodically.
+        if self._retention_task is None or self._retention_task.done():
+            self._retention_task = asyncio.create_task(
+                retention_loop(self.config, self.db)
+            )
+            logger.info(
+                f"Recording retention sweep started "
+                f"(retention={self.config.recording_retention_days} days, "
+                f"interval={self.config.purge_interval_hours}h)"
+            )
+
     async def on_voice_state_update(self, member, before, after):
         """Delegate voice state changes to the voice module."""
         await on_voice_state_update(self, member, before, after)
@@ -176,6 +190,9 @@ class ScribesBot(commands.Bot):
             # in flight is not abandoned mid-send.
             if self.delivery_loop and self.delivery_loop.is_running:
                 await self.delivery_loop.stop()
+            # Cancel the retention sweep so it doesn't log after close.
+            if self._retention_task and not self._retention_task.done():
+                self._retention_task.cancel()
             await self.close()
 
         asyncio.ensure_future(_shutdown())
