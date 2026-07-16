@@ -300,18 +300,19 @@ class TestDeliveryLoopDeliver:
         bot.get_channel.return_value = mock_channel
         bot.config.transcript_channel_id = None
 
-        await loop._deliver(session)
+        # Patch discord.File so we can verify construction args.
+        # conftest pre-imports the real discord package, so bot.delivery
+        # holds the real discord.File — which has no call_args attribute.
+        delivery_discord = DeliveryLoop._deliver.__globals__["discord"]
+        with patch.object(delivery_discord, "File", MagicMock()) as mock_file_cls:
+            await loop._deliver(session)
 
         # Must send a message with a file attachment
         mock_thread.send.assert_awaited_once()
         _, kwargs = mock_thread.send.call_args
         assert "file" in kwargs, "transcript must be sent as a file attachment"
 
-        # Verify discord.File was constructed with the right filename.
-        # discord was mocked during import, so access it via the function's
-        # globals (the module-level discord reference from import time).
-        delivery_discord = DeliveryLoop._deliver.__globals__["discord"]
-        file_kwargs = delivery_discord.File.call_args.kwargs
+        file_kwargs = mock_file_cls.call_args.kwargs
         assert file_kwargs["filename"] == "s1.txt"
 
     @pytest.mark.asyncio

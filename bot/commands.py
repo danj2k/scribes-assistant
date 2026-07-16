@@ -11,6 +11,7 @@ import discord
 from discord.commands import SlashCommandGroup, Option
 from discord.ext import commands
 
+from bot.timestamped_sink import TimestampedWaveSink
 from shared.database import (
     STATUS_RECORDING,
     STATUS_QUEUED,
@@ -159,14 +160,21 @@ def setup_commands(bot: commands.Bot):
                     )
                     return
 
-            # Start recording — py-cord's WaveSink captures per-user WAV audio.
+            # Start recording — TimestampedWaveSink pads silence for DTX
+            # gaps and initial offsets so all speakers share the same
+            # timeline.  The base WaveSink simply appends PCM as it
+            # arrives, which means each user's file starts at their first
+            # speech and all pauses are removed — making timestamps
+            # incomparable across speakers and scrambling dialogue order.
+            # See bot/timestamped_sink.py for full details.
+            #
             # We pass a dummy positional arg (None) because PR #3159's
             # AudioReader._stop() only fires the callback if self.args is
             # truthy: ``if self.after and self.args:``.  Without any *args,
             # self.args is an empty tuple (falsy) and the callback never runs.
             # The dummy arg is harmless — it's forwarded as *args to
             # after_cb, which ignores them.
-            sink = discord.sinks.WaveSink()
+            sink = TimestampedWaveSink()
             after_cb, recording_done = make_recording_after_callback(
                 bot, session_id, guild_id, str(interaction.channel_id), sink,
             )

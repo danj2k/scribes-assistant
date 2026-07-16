@@ -1,5 +1,37 @@
 # Scribe's Assistant — Development Log
 
+## 2026-07-16 — Fix: multi-speaker temporal alignment (TimestampedWaveSink)
+
+Multi-speaker transcripts had dialogue in the wrong order — questions appeared
+after answers, interjections were displaced. Root cause: Discord's DTX
+(Discontinuous Transmission) means no RTP packets are sent for silent users.
+py-cord's base WaveSink appends PCM as it arrives with no silence padding, so
+each user's WAV file starts at their first speech and has all pauses removed.
+Whisper timestamps from different speakers are then incomparable — they measure
+different compressed timelines.
+
+Fix: TimestampedWaveSink (bot/timestamped_sink.py) subclasses WaveSink and pads
+silence in two places:
+- Initial offset: wall-clock delay between recording start and each user's first
+  packet (time.monotonic, since RTP timestamps are per-SSRC).
+- DTX gaps: RTP timestamp delta between consecutive packets from the same user,
+  minus 1 frame (the timestamp marks the start of each packet). Gaps > 60s are
+  treated as SSRC resets and not padded.
+
+Two bugs found and fixed during implementation:
+1. _last_rtp_ts was only updated in the else branch (not first packet), so DTX
+   detection never fired. Moved outside the if/else.
+2. Off-by-one: silence was padded for gap_frames instead of gap_frames - 1.
+   The RTP timestamp marks the start of each packet, so a 5-frame gap has only
+   4 frames of silence between the two packets.
+
+Tests: 23 new tests in test_timestamped_sink.py covering constants, initial
+delay, DTX gaps (including wraparound, max-plausible, None timestamps),
+edge cases, and thread safety. conftest.py pre-imports discord.sinks so the
+real module is available for the sink's imports. test_delivery.py patched
+discord.File via mock.patch.object instead of relying on module-level mock.
+361/361 pass.
+
 ## 2026-07-15 — Fix: sanitise recording filenames (display name path traversal)
 
 Recording files were named using Discord display names via `str(user_obj)`

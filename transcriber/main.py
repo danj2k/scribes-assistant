@@ -219,9 +219,11 @@ def run_worker(config_path: str | None = None):
 
                 # Store timestamped segments in the DB for later merging.
                 # Each segment's start_time is relative to the start of this
-                # speaker's audio file. Since all speakers' WAV files share
-                # the same zero point (recording starts at /start), segments
-                # from different files can be merged chronologically.
+                # speaker's audio file. Because TimestampedWaveSink pads
+                # silence for DTX gaps and initial offsets, all speakers'
+                # WAV files share the same zero point (the recording start
+                # at /start), so segments from different files can be
+                # merged chronologically. See bot/timestamped_sink.py.
                 # Apply lexicon fuzzy correction to each segment's text
                 # before storing so the corrected text is what gets merged
                 # and delivered.

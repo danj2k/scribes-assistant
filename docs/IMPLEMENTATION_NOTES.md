@@ -10,6 +10,22 @@ py-cord decodes Opus to WAV internally before passing audio data to the receive 
 
 sherpa-onnx will consume as many CPU cores as available by default. On a 4-core machine, this will starve the bot container and the OS. Explicitly clamp thread count in the sherpa-onnx configuration — likely to 2-3 cores, leaving headroom for the bot and system processes. Test empirically to find the right balance.
 
+### Multi-Speaker Temporal Alignment — TimestampedWaveSink
+
+Discord uses Discontinuous Transmission (DTX): when a user is silent, no RTP packets are sent for them. py-cord's base `WaveSink` simply appends PCM data to a per-user `BytesIO` as packets arrive — no silence padding for gaps. This means each user's WAV file:
+
+1. **Starts at their first speech**, not at recording start. A user who waits 30 seconds before speaking has their timeline shifted by 30 seconds relative to the first speaker.
+2. **Has all silence gaps removed.** When the user pauses mid-speech (DTX), those silent frames are simply omitted, compressing their timeline.
+
+The result: Whisper timestamps from different speakers' WAV files are not comparable. Speaker A's 00:30 and speaker B's 00:30 correspond to different absolute times. When the transcriber merges segments by timestamp, dialogue becomes nonsensical — questions appear after answers, interjections are displaced.
+
+`TimestampedWaveSink` (bot/timestamped_sink.py) fixes both problems by subclassing `WaveSink`:
+
+- **Initial offset** — on each user's first packet, pads their file with silence for the elapsed wall-clock time since recording start (the first packet from any user). Uses `time.monotonic()` because RTP timestamps are per-SSRC and not comparable across users.
+- **DTX gaps** — on subsequent packets, if the RTP timestamp delta exceeds one frame, pads silence for the gap. The RTP timestamp marks the start of each packet's audio, so a gap of N frames means N-1 frames of silence between the end of the previous PCM and the start of the current one. Uses unsigned 32-bit subtraction for wraparound safety. Gaps exceeding 60 seconds are treated as SSRC resets and not padded.
+
+Opus frame constants: 48 kHz, 2 channels, 16-bit samples, 960 samples per frame (20 ms), 3840 bytes per frame. These are fixed by the Opus codec standard and Discord's voice transport.
+
 ### Audio Format Handling
 
 py-cord decodes Opus to WAV internally before passing audio data to the receive callback, delivering audio at Discord's native rate (48kHz stereo). The transcriber reads these WAV files with `soundfile.read()`, which returns a numpy float32 array. No external conversion step is needed:
