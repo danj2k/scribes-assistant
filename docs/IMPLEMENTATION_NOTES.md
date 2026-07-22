@@ -136,9 +136,11 @@ If `start_recording()` is called before the handshake completes, the `AudioReade
 
 The `/start` command now polls `vc._connection.dave_session.ready` every 250ms for up to 15 seconds before calling `start_recording()`. If DAVE is not enabled on the channel (`dave_session is None`), the wait is skipped. If the handshake doesn't complete within 15 seconds, the bot disconnects and informs the user rather than proceeding with a broken session.
 
-### AudioData.file.getbuffer()
+### TimestampedWaveSink -- Disk-Backed Writes
 
-py-cord's `AudioData` stores its `BytesIO` buffer at `.file`, not directly on the object. The after-callback calls `audio_data.file.getbuffer()` (not `audio_data.getbuffer()`) when writing WAV files. PR #3159's `AudioReader._stop()` calls `sink.cleanup()` (which includes `audio_data.cleanup()` + `format_audio()`) **after** the after-callback, so the callback must not call `cleanup()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
+The custom `TimestampedWaveSink` (subclass of py-cord's `WaveSink`) overrides `write()` to save PCM data directly to temporary files on disk (`NamedTemporaryFile(delete=False)`) via `_temp_paths[user]`, rather than appending to in-memory `BytesIO` buffers as the base `WaveSink` does. This eliminates the `asyncio.to_thread()` file-writing step entirely -- the recording callback only needs to `os.rename()` temp files to their final paths, which is an instant filesystem metadata operation regardless of file size.
+
+py-cord's `AudioData` still stores its `BytesIO` buffer at `.file` in the base class, but `TimestampedWaveSink.write()` bypasses this by writing PCM directly to a temp file path tracked in `_temp_paths`. PR #3159's `AudioReader._stop()` calls `sink.cleanup()` (including `audio_data.cleanup()` + `format_audio()`) **after** the after-callback, so the callback must not call `cleanup()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
 
 ### libopus Docker Dependency
 
@@ -156,7 +158,7 @@ PR #3159's `start_recording(sink, callback, *args)` stores `callback` as an `Aud
 
 **`self.args` truthiness guard (PR #3159 quirk):** `AudioReader._stop()` guards the callback invocation with `if self.after and self.args:`. If no `*args` are passed to `start_recording()`, `self.args` is an empty tuple (falsy) and the callback is **never invoked**. The `/start` command passes a dummy `None` argument: `vc.start_recording(sink, after_cb, None)`. This is harmless — the dummy is forwarded as `*args` to `after_cb`, which ignores them.
 
-**`sink.cleanup()` called by `_stop()`:** PR #3159's `AudioReader._stop()` calls `sink.cleanup()` **after** the after-callback. This calls `audio_data.cleanup()` + `format_audio()` for each `AudioData`, finalising WAV headers and seeking the `BytesIO` to 0. The after-callback must **not** call `audio_data.cleanup()` or `format_audio()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
+**`sink.cleanup()` called by `_stop()`:** PR #3159's `AudioReader._stop()` calls `sink.cleanup()` **after** the after-callback. This calls `audio_data.cleanup()` + `format_audio()` for each `AudioData`, finalising WAV headers. For the disk-backed `TimestampedWaveSink`, `format_audio()` is a no-op since PCM data was written directly to the temp file -- the WAV header was already finalised by `write()`. The after-callback must **not** call `audio_data.cleanup()` or `format_audio()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
 
 The bot uses `make_recording_after_callback()` to create a sync callback that:
 1. Captures the sink, session metadata, and event loop at creation time (in `start_command`)
@@ -165,9 +167,11 @@ The bot uses `make_recording_after_callback()` to create a sync callback that:
 
 This ensures `/stop` does not call `end_session()` (which transitions to QUEUED) until all audio files have been written to disk and registered in the `audio_files` table. Without this, the transcriber could find zero files for a session and produce an empty transcript.
 
-#### Non-blocking file writes
+#### Non-blocking file writes (disk-backed sink)
 
-The async processing coroutine (`_process_recording`) runs on the event loop. WAV file writes — which can be tens of MB for a 30-minute session — are offloaded to a thread pool via `asyncio.to_thread(_write_audio_files_sync, file_specs)`. The sync helper `_write_audio_files_sync` iterates the file specs, creates directories, writes bytes, and returns the count of successfully written files. Speaker name resolution (guild member cache lookup, no I/O) and DB registration (`add_audio_file`) remain on the event loop. This prevents blocking the event loop during file I/O, which would stall Discord gateway heartbeats and cause the bot to appear unresponsive.
+The async processing coroutine (`_process_recording`) runs on the event loop. The custom `TimestampedWaveSink` writes PCM data directly to temporary files on disk as packets arrive during recording. When the recording stops, the callback only needs to `os.rename()` these temp files to their final paths — an instant filesystem metadata operation. This eliminates the need for `asyncio.to_thread()` entirely: the rename loop runs directly on the event loop without blocking, regardless of file size. Speaker name resolution (guild member cache lookup, no I/O) and DB registration (`add_audio_file`) also remain on the event loop.
+
+The old approach used `asyncio.to_thread(_write_audio_files_sync, file_specs)` to write WAV files from memory (BytesIO) to disk in a thread pool. The disk-backed sink replaces this with a single `os.rename()` per file, achieving the same non-blocking behaviour with less complexity.
 
 #### Filename sanitisation
 

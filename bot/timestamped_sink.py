@@ -29,8 +29,9 @@ This sink fixes both problems:
 
 from __future__ import annotations
 
-import io
 import logging
+import os
+import tempfile
 import threading
 import time
 
@@ -75,6 +76,12 @@ class TimestampedWaveSink(WaveSink):
         # _last_rtp_ts: RTP timestamp of the previous packet (for DTX gap detection).
         self._last_rtp_ts: dict = {}
 
+        # Maps user -> temporary file path for the raw PCM data written
+        # during this recording session. Files are renamed to their final
+        # paths by the after-callback once recording stops.  Using
+        # disk-backed files avoids buffering all audio in memory.
+        self._temp_paths: dict = {}
+
         # Serialises access to the per-user tracking state.  py-cord's
         # router already serialises sink.write calls via its own RLock,
         # but this guard makes the subclass self-contained.
@@ -109,8 +116,12 @@ class TimestampedWaveSink(WaveSink):
                 self._recording_start = now
 
             # Create the AudioData entry on first packet for this user.
+            # Use a disk-backed temp file instead of an in-memory BytesIO
+            # to avoid buffering hours of PCM data in RAM.
             if user not in self.audio_data:
-                self.audio_data[user] = AudioData(io.BytesIO())
+                tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                self._temp_paths[user] = tmp.name
+                self.audio_data[user] = AudioData(file=tmp)
 
                 # Pad initial silence so this user's file starts at the
                 # recording's zero point, not at their first speech.

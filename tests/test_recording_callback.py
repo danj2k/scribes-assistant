@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import io
+import os
 import sys
+import tempfile
 import types
 from unittest.mock import MagicMock, patch
 
@@ -84,20 +85,25 @@ class FakeUser:
 
 
 class FakeAudioData:
-    """Mimics py-cord's BytesIO-based audio data container."""
+    """Mimics py-cord's audio data container, backed by a temp file on disk."""
 
     def __init__(self, data: bytes):
-        self.file = io.BytesIO(data)
+        self.file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        self.file.write(data)
+        self.file.flush()
 
     def cleanup(self):
         self.file.seek(0)
 
 
 class FakeSink:
-    """Mimics discord.sinks.WaveSink — just needs audio_data dict."""
+    """Mimics discord.sinks.WaveSink — just needs audio_data dict and _temp_paths."""
 
     def __init__(self, audio_data: dict):
         self.audio_data = audio_data
+        self._temp_paths = {}
+        for user, ad in audio_data.items():
+            self._temp_paths[user] = ad.file.name
 
     def format_audio(self, audio_data):
         pass  # no-op — real WaveSink writes WAV header here
@@ -159,38 +165,33 @@ class FakeBot:
 
 @pytest.fixture
 def mock_file_io(monkeypatch):
-    """Mock os.makedirs and builtins.open so no real disk I/O happens.
+    """Mock os.rename and os.makedirs so no real disk I/O happens.
 
-    Files are tracked in a dict mapping path -> bytes written, so tests
-    can verify content without touching /data.
+    Files are tracked in a dict mapping path -> bytes read from the
+    temp file before rename, so tests can verify content without
+    touching /data.
     """
     written_files: dict[str, bytes | str] = {}
 
     def mock_makedirs(path, exist_ok=False):
-        pass  # no-op — paths are virtual
+        pass  # no-op — don't touch real filesystem
 
-    def mock_open(path, mode, *args, **kwargs):
-        if "w" in mode and "b" in mode:
-            buf = io.BytesIO()
-            # Capture writes on close
-            original_close = buf.close
-            def capture_close():
-                written_files[str(path)] = buf.getvalue()
-                original_close()
-            buf.close = capture_close
-            return buf
-        elif "w" in mode:
-            buf = io.StringIO()
-            original_close = buf.close
-            def capture_close():
-                written_files[str(path)] = buf.getvalue()
-                original_close()
-            buf.close = capture_close
-            return buf
-        raise NotImplementedError(f"mock_open: mode {mode} not supported")
+    def mock_rename(src, dst):
+        with open(src, "rb") as f:
+            content = f.read()
+        written_files[dst] = content
+        os.unlink(src)  # Clean up the temp file
+
+    def mock_getsize(path):
+        # Return the size from written_files if available, otherwise 0
+        data = written_files.get(path)
+        if data is not None:
+            return len(data)
+        return 0
 
     monkeypatch.setattr(_bc_commands.os, "makedirs", mock_makedirs)
-    monkeypatch.setattr("builtins.open", mock_open)
+    monkeypatch.setattr(_bc_commands.os, "rename", mock_rename)
+    monkeypatch.setattr(_bc_commands.os.path, "getsize", mock_getsize)
     return written_files
 
 
@@ -237,6 +238,9 @@ class TestMakeRecordingAfterCallback:
         # PR #3159 calls after(sink, *args) — sink is the first positional arg
         after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
+
+        print("\nDB audio_files:", db.audio_files)
+        print("mock_file_io keys:", list(mock_file_io.keys()))
 
         paths = [f["filepath"] for f in db.audio_files]
         assert any("111" in p for p in paths)
@@ -450,9 +454,8 @@ class TestMakeRecordingAfterCallback:
         # Non-empty recording must NOT call fail_session
         assert db.failed_sessions == []
 
-    async def test_file_writes_offloaded_to_thread(self, mock_file_io):
-        """WAV file writes must be offloaded via asyncio.to_thread so the
-        event loop is not blocked during potentially large file I/O."""
+    async def test_files_renamed_to_destination(self, mock_file_io):
+        """Temp files are renamed to their final paths (no bytes() on event loop)."""
         db = FakeDB()
         bot = FakeBot(db)
         sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
@@ -460,29 +463,14 @@ class TestMakeRecordingAfterCallback:
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
         )
+        after_cb(sink)
+        await asyncio.wait_for(future, timeout=5.0)
 
-        to_thread_called = False
-        original_to_thread = asyncio.to_thread
-
-        async def tracking_to_thread(func, *args, **kwargs):
-            nonlocal to_thread_called
-            to_thread_called = True
-            return await original_to_thread(func, *args, **kwargs)
-
-        with patch("asyncio.to_thread", tracking_to_thread):
-            after_cb(sink)
-            await asyncio.wait_for(future, timeout=5.0)
-
-        assert to_thread_called, "asyncio.to_thread was not used for file writes"
         assert future.result() == 1
-
-    async def test_write_audio_files_sync_is_sync_function(self):
-        """_write_audio_files_sync must be a regular sync function, not a
-        coroutine — it runs inside a worker thread."""
-        import inspect as _inspect
-        from bot.commands import _write_audio_files_sync
-        assert not _inspect.iscoroutinefunction(_write_audio_files_sync)
-        assert callable(_write_audio_files_sync)
+        # Verify this test actually exercised the rename path
+        # (mock_file_io captures files written via os.rename)
+        assert len(mock_file_io) == 1
+        assert list(mock_file_io.keys())[0].endswith("111.wav")
 
     async def test_filename_sanitized_in_callback(self, mock_file_io):
         """A display name containing '/' must not create a subdirectory."""
@@ -505,39 +493,3 @@ class TestMakeRecordingAfterCallback:
         assert "/" not in wav_paths[0].split("/")[-1], \
             f"Filename contains slash: {wav_paths[0]}"
         assert wav_paths[0].endswith("Duckinell_DM.wav")
-
-    async def test_write_audio_files_sync_writes_all_files(self, mock_file_io):
-        """_write_audio_files_sync should write all files and return the count."""
-        from bot.commands import _write_audio_files_sync
-
-        file_specs = [
-            ("/data/recordings/s1/user1.wav", b"audio1"),
-            ("/data/recordings/s1/user2.wav", b"audio2"),
-        ]
-        count = _write_audio_files_sync(file_specs)
-        assert count == 2
-        assert "/data/recordings/s1/user1.wav" in mock_file_io
-        assert "/data/recordings/s1/user2.wav" in mock_file_io
-        assert mock_file_io["/data/recordings/s1/user1.wav"] == b"audio1"
-
-    async def test_write_audio_files_sync_continues_on_error(self, mock_file_io):
-        """If one file fails, the function should log and continue with others."""
-        from bot.commands import _write_audio_files_sync
-
-        file_specs = [
-            ("/data/recordings/s1/good.wav", b"good data"),
-            ("/bad/path/missing/dir/bad.wav", b"bad data"),
-            ("/data/recordings/s1/also_good.wav", b"more data"),
-        ]
-        count = _write_audio_files_sync(file_specs)
-        # mock_file_io makes makedirs a no-op, so the /bad/path/ file
-        # will fail when open tries to write to a non-existent dir.
-        # But mock_open captures it anyway (returns BytesIO), so all
-        # will "succeed" in the mock environment. This test just verifies
-        # the function doesn't crash and returns a count.
-        assert count == 3
-
-    async def test_write_audio_files_sync_empty_list(self):
-        """An empty file_specs list should return 0."""
-        from bot.commands import _write_audio_files_sync
-        assert _write_audio_files_sync([]) == 0

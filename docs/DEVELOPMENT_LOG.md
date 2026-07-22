@@ -851,21 +851,30 @@ The `_match_case()` call is applied at both correction stages (exact match and f
 
 ---
 
-## Bug #18: Blocking file I/O in async recording callback
+## Bug #18: Blocking file I/O in async recording callback (superseded by TimestampedWaveSink)
 
-**Date:** 2026-07-11
+**Date:** 2026-07-11 (initial fix); 2026-07-22 (superseded by disk-backed sink)
 
-**Problem:** The `_process_recording` async coroutine in `bot/commands.py` wrote WAV files to disk using synchronous `open()` and `f.write()` calls directly on the event loop. For a 30-minute D&D session, the per-speaker WAV files can be tens of MB, and writing them synchronously blocked the event loop — stalling Discord gateway heartbeats and causing the bot to appear unresponsive during the critical recording-stop window.
+**Initial problem:** The `_process_recording` async coroutine in `bot/commands.py` wrote WAV files to disk using synchronous `open()` and `f.write()` calls directly on the event loop. For a 30-minute D&D session, the per-speaker WAV files can be tens of MB, and writing them synchronously blocked the event loop — stalling Discord gateway heartbeats and causing the bot to appear unresponsive during the critical recording-stop window.
 
-**Fix:** Extracted the file-writing logic into a standalone sync helper `_write_audio_files_sync(file_specs)`, which takes a list of `(filepath, raw_bytes)` tuples, creates directories, writes files, and returns the success count. The async coroutine calls this helper via `asyncio.to_thread()`, offloading blocking I/O to a thread pool. Speaker name resolution (guild member cache, no I/O) and DB registration (`add_audio_file`) remain on the event loop. The existing `run_coroutine_threadsafe` pattern (from Bug #5) and future resolution (from Bug #6) are preserved unchanged.
+**Initial fix (2026-07-11):** Extracted the file-writing logic into a standalone sync helper `_write_audio_files_sync(file_specs)`, which takes a list of `(filepath, raw_bytes)` tuples, creates directories, writes files, and returns the success count. The async coroutine called this helper via `asyncio.to_thread()`, offloading blocking I/O to a thread pool.
 
-**Files changed:**
+**Superseded by disk-backed sink (2026-07-22):** The `TimestampedWaveSink` (subclass of py-cord's `WaveSink`) was introduced to write PCM data directly to temporary files on disk as audio packets arrive, rather than appending to in-memory `BytesIO` buffers. This means the recording callback no longer needs to write any data at all -- it only calls `os.rename()` to move temp files to their final paths, which is an instant filesystem metadata operation regardless of file size. The `_write_audio_files_sync()` helper was removed entirely, and `_process_recording` no longer uses `asyncio.to_thread()`.
+
+**Files changed (initial fix):**
 - `bot/commands.py` — added `_write_audio_files_sync()` helper; refactored `_process_recording` to build file specs + speaker info on the event loop, write files via `asyncio.to_thread`, then register in DB on the event loop
 - `tests/test_recording_callback.py` — 5 new tests: verifies `asyncio.to_thread` is used, helper is sync, helper writes all files, helper continues on error, empty list returns 0
 - `docs/ARCHITECTURE.md` — updated step 7 of recording flow and container responsibilities
 - `docs/IMPLEMENTATION_NOTES.md` — added "Non-blocking file writes" subsection
 
-**Impact:** 253/253 tests pass (5 new). The event loop is no longer blocked during WAV file writes — Discord gateway events are handled promptly even during the recording-stop processing window.
+**Files changed (disk-backed refactor):**
+- `bot/sinks.py` -- new module: `TimestampedWaveSink` with `write()` that saves PCM to temp files via `_temp_paths`
+- `bot/commands.py` -- removed `_write_audio_files_sync()`; `_process_recording` now uses `os.rename()` directly on the event loop
+- `tests/test_recording_callback.py` -- updated tests to mock `os.rename` and `os.path.getsize` instead of the old sync helper
+- `tests/test_timestamped_sink.py` -- new test suite for `TimestampedWaveSink`
+- `docs/IMPLEMENTATION_NOTES.md` -- updated "Non-blocking file writes" to describe disk-backed approach, replaced "AudioData.file.getbuffer()" with "TimestampedWaveSink -- Disk-Backed Writes"
+
+**Impact:** 265/265 tests pass (5 new for sink, tests updated for new mock pattern). The event loop is no longer blocked during WAV file writes, with zero data copying at recording-stop time -- the disk-backed sink handles all I/O incrementally during recording.
 
 ---
 

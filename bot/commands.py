@@ -550,31 +550,6 @@ def _sanitize_filename(name: str) -> str:
     return result or "unknown"
 
 
-def _write_audio_files_sync(file_specs):
-    """Write WAV files to disk synchronously.
-
-    Called via ``asyncio.to_thread`` so the event loop is not blocked
-    while writing potentially large WAV files from a 30-minute session.
-
-    Args:
-        file_specs: list of ``(filepath, raw_bytes)`` tuples.
-
-    Returns the number of files successfully written.
-    """
-    count = 0
-    for filepath, raw_bytes in file_specs:
-        try:
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            with open(filepath, "wb") as f:
-                f.write(raw_bytes)
-            count += 1
-        except Exception:
-            logging.getLogger("scribes.bot").exception(
-                "Failed to write audio file %s", filepath
-            )
-    return count
-
-
 def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     """Create a py-cord after-callback for recording completion.
 
@@ -623,7 +598,7 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             # PR #3159's AudioReader._stop() calls sink.cleanup() after the
             # callback — this calls audio_data.cleanup() + format_audio()
             # for each AudioData, finalising WAV headers and seeking the
-            # BytesIO to 0.  We must NOT call cleanup() again here —
+            # temp file to 0.  We must NOT call cleanup() again here —
             # AudioData.cleanup() raises if already finished.
             # Resolve guild for member lookup — needed to map user IDs
             # to display names. The transcriber has no Discord API access,
@@ -632,12 +607,12 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
 
             rec_dir = f"/data/recordings/{session_id}"
 
-            # Build the list of files to write. Speaker name resolution
-            # touches the guild member cache (fast, no I/O) so it stays
-            # on the event loop. Only the actual WAV writes — which can
-            # be tens of MB for a 30-minute session — are offloaded to a
-            # thread via asyncio.to_thread.
-            file_specs = []
+            # Build the list of files to rename. Speaker name resolution
+            # touches the guild member cache (fast, no I/O). The sink
+            # writes PCM directly to temporary files on disk as it
+            # arrives, so renaming them to their final paths is instant
+            # (filesystem metadata only) — no need for asyncio.to_thread.
+            file_specs = []  # (filepath, speaker_name, user_obj)
             speaker_info = []  # (discord_user_id, speaker_name, size_bytes)
             for user_obj, audio_data in sink.audio_data.items():
                 # pycord keys audio_data by User/Member objects, not IDs.
@@ -653,18 +628,42 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
 
                 safe_name = _sanitize_filename(speaker_name)
                 filepath = f"{rec_dir}/{safe_name}.wav"
-                raw_bytes = audio_data.file.getbuffer()
-                file_specs.append((filepath, bytes(raw_bytes)))
+                temp_path = sink._temp_paths.get(user_obj)
+                file_specs.append((filepath, temp_path, user_obj))
 
                 speaker_info.append(
-                    (str(user_obj.id), speaker_name, raw_bytes.nbytes)
+                    (str(user_obj.id), speaker_name, 0)  # size filled after rename
                 )
 
-            # Offload blocking file writes to a thread pool so the
-            # event loop can continue handling Discord gateway events.
-            audio_count = await asyncio.to_thread(
-                _write_audio_files_sync, file_specs
-            )
+            # Rename temp files to their final paths.  os.rename is a
+            # filesystem metadata operation (instant, no data copying),
+            # so it's safe on the event loop.
+            os.makedirs(rec_dir, exist_ok=True)
+            audio_count = 0
+            for i, (filepath, temp_path, user_obj) in enumerate(file_specs):
+                if temp_path is None or not os.path.exists(temp_path):
+                    bot.logger.warning(
+                        f"Session {session_id}: no temp file for {user_obj}, skipping"
+                    )
+                    continue
+                try:
+                    os.rename(temp_path, filepath)
+                    audio_count += 1
+                    # Update the size in speaker_info now that we know it
+                    speaker_info[i] = (
+                        speaker_info[i][0],
+                        speaker_info[i][1],
+                        os.path.getsize(filepath),
+                    )
+                except OSError:
+                    bot.logger.exception(
+                        "Failed to rename temp file %s -> %s", temp_path, filepath
+                    )
+                    # Clean up orphaned temp file
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
 
             # Register the files in the DB now that they're on disk.
             for i, (discord_user_id, speaker_name, size_bytes) in enumerate(

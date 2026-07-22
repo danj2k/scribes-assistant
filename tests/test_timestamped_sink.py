@@ -58,8 +58,17 @@ def _make_sink() -> TimestampedWaveSink:
 
 
 def _get_user_audio(sink: TimestampedWaveSink, user) -> bytes:
-    """Extract written bytes for a user from the sink's audio_data."""
-    return sink.audio_data[user].file.getvalue()
+    """Extract written bytes for a user from the sink's audio_data.
+
+    The sink now writes to temp files (not BytesIO), so we use seek+read
+    instead of MemoryIO-specific getvalue().
+    """
+    f = sink.audio_data[user].file
+    pos = f.tell()
+    f.seek(0)
+    data = f.read()
+    f.seek(pos)
+    return data
 
 
 # ---------------------------------------------------------------------------
