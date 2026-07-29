@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 import os
+import shutil
 
 import discord
 from discord.commands import SlashCommandGroup, Option
@@ -637,7 +638,12 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
 
             # Rename temp files to their final paths.  os.rename is a
             # filesystem metadata operation (instant, no data copying),
-            # so it's safe on the event loop.
+            # so it's safe on the event loop when /tmp and /data are on
+            # the same filesystem.  When they're on different filesystems
+            # (e.g. Docker overlay vs a bind-mounted volume), os.rename
+            # raises OSError [Errno 18] Invalid cross-device link — in
+            # that case shutil.move falls back to copy+delete via a thread
+            # pool so the event loop isn't blocked by disk I/O.
             os.makedirs(rec_dir, exist_ok=True)
             audio_count = 0
             for i, (filepath, temp_path, user_obj) in enumerate(file_specs):
@@ -647,7 +653,10 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                     )
                     continue
                 try:
-                    os.rename(temp_path, filepath)
+                    try:
+                        os.rename(temp_path, filepath)
+                    except OSError:
+                        await asyncio.to_thread(shutil.move, temp_path, filepath)
                     audio_count += 1
                     # Update the size in speaker_info now that we know it
                     speaker_info[i] = (
@@ -655,9 +664,9 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                         speaker_info[i][1],
                         os.path.getsize(filepath),
                     )
-                except OSError:
+                except Exception:
                     bot.logger.exception(
-                        "Failed to rename temp file %s -> %s", temp_path, filepath
+                        "Failed to move temp file %s -> %s", temp_path, filepath
                     )
                     # Clean up orphaned temp file
                     try:
