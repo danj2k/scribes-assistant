@@ -91,6 +91,7 @@ class FakeAudioData:
         self.file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         self.file.write(data)
         self.file.flush()
+        self.file.seek(0)
 
     def cleanup(self):
         self.file.seek(0)
@@ -165,32 +166,34 @@ class FakeBot:
 
 @pytest.fixture
 def mock_file_io(monkeypatch):
-    """Mock os.rename and os.makedirs so no real disk I/O happens.
+    """Mock disk I/O so no real filesystem access happens.
 
-    Files are tracked in a dict mapping path -> bytes read from the
-    temp file before rename, so tests can verify content without
-    touching /data.
+    The new code path writes WAV-formatted BytesIO data to the final
+    path via _write_wav_file (in a thread pool via asyncio.to_thread),
+    then removes the raw-PCM temp file.  This fixture intercepts those
+    calls so tests can verify content without touching /data.
     """
     written_files: dict[str, bytes | str] = {}
 
     def mock_makedirs(path, exist_ok=False):
         pass  # no-op — don't touch real filesystem
 
-    def mock_rename(src, dst):
-        with open(src, "rb") as f:
-            content = f.read()
-        written_files[dst] = content
-        os.unlink(src)  # Clean up the temp file
+    def mock_write_wav(filepath, wav_bytes, temp_path):
+        written_files[filepath] = wav_bytes
+        # Clean up the temp file as the real function does
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
 
     def mock_getsize(path):
-        # Return the size from written_files if available, otherwise 0
         data = written_files.get(path)
         if data is not None:
             return len(data)
         return 0
 
     monkeypatch.setattr(_bc_commands.os, "makedirs", mock_makedirs)
-    monkeypatch.setattr(_bc_commands.os, "rename", mock_rename)
+    monkeypatch.setattr(_bc_commands, "_write_wav_file", mock_write_wav)
     monkeypatch.setattr(_bc_commands.os.path, "getsize", mock_getsize)
     return written_files
 
@@ -454,8 +457,8 @@ class TestMakeRecordingAfterCallback:
         # Non-empty recording must NOT call fail_session
         assert db.failed_sessions == []
 
-    async def test_files_renamed_to_destination(self, mock_file_io):
-        """Temp files are renamed to their final paths (no bytes() on event loop)."""
+    async def test_files_written_to_destination(self, mock_file_io):
+        """WAV-formatted bytes are written to the final path."""
         db = FakeDB()
         bot = FakeBot(db)
         sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
@@ -467,8 +470,8 @@ class TestMakeRecordingAfterCallback:
         await asyncio.wait_for(future, timeout=5.0)
 
         assert future.result() == 1
-        # Verify this test actually exercised the rename path
-        # (mock_file_io captures files written via os.rename)
+        # Verify this test actually exercised the write path
+        # (mock_file_io captures files written via _write_wav_file)
         assert len(mock_file_io) == 1
         assert list(mock_file_io.keys())[0].endswith("111.wav")
 

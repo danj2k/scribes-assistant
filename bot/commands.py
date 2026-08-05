@@ -6,7 +6,6 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 import os
-import shutil
 
 import discord
 from discord.commands import SlashCommandGroup, Option
@@ -551,6 +550,28 @@ def _sanitize_filename(name: str) -> str:
     return result or "unknown"
 
 
+def _write_wav_file(filepath: str, wav_bytes: bytes, temp_path: str) -> None:
+    """Write WAV data to the final path and remove the raw-PCM temp file.
+
+    Args:
+        filepath: Final output path (with proper WAV header).
+        wav_bytes: BytesIO content from WaveSink.format_audio() —
+            contains a proper WAV header followed by PCM frames.
+        temp_path: Temporary file with raw PCM (no header) — deleted
+            after the WAV file is written.
+
+    This runs in a thread pool (``asyncio.to_thread``) so disk I/O
+    does not block the event loop on large files.
+    """
+    with open(filepath, "wb") as f:
+        f.write(wav_bytes)
+    # Remove the raw-PCM temp file — no longer needed.
+    try:
+        os.unlink(temp_path)
+    except OSError:
+        pass
+
+
 def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
     """Create a py-cord after-callback for recording completion.
 
@@ -636,14 +657,13 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                     (str(user_obj.id), speaker_name, 0)  # size filled after rename
                 )
 
-            # Rename temp files to their final paths.  os.rename is a
-            # filesystem metadata operation (instant, no data copying),
-            # so it's safe on the event loop when /tmp and /data are on
-            # the same filesystem.  When they're on different filesystems
-            # (e.g. Docker overlay vs a bind-mounted volume), os.rename
-            # raises OSError [Errno 18] Invalid cross-device link — in
-            # that case shutil.move falls back to copy+delete via a thread
-            # pool so the event loop isn't blocked by disk I/O.
+            # Write WAV-formatted audio to the final path.  After
+            # sink.cleanup() runs (triggered by AudioReader._stop()),
+            # WaveSink.format_audio() has replaced each AudioData's
+            # internal file with a BytesIO containing proper WAV headers
+            # + PCM data.  The original temp file on disk still contains
+            # only raw PCM — renaming it to .wav would produce a file
+            # soundfile/libsoundfile rejects with "Format not recognised."
             os.makedirs(rec_dir, exist_ok=True)
             audio_count = 0
             for i, (filepath, temp_path, user_obj) in enumerate(file_specs):
@@ -653,10 +673,15 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                     )
                     continue
                 try:
-                    try:
-                        os.rename(temp_path, filepath)
-                    except OSError:
-                        await asyncio.to_thread(shutil.move, temp_path, filepath)
+                    # Write the WAV-formatted BytesIO data to the final
+                    # path.  The audio_data.file is a BytesIO (replaced
+                    # by WaveSink.format_audio() during cleanup) with a
+                    # proper WAV header — this is what soundfile needs.
+                    audio_data = sink.audio_data[user_obj]
+                    wav_bytes = audio_data.file.read()
+                    await asyncio.to_thread(
+                        _write_wav_file, filepath, wav_bytes, temp_path
+                    )
                     audio_count += 1
                     # Update the size in speaker_info now that we know it
                     speaker_info[i] = (
@@ -666,7 +691,8 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                     )
                 except Exception:
                     bot.logger.exception(
-                        "Failed to move temp file %s -> %s", temp_path, filepath
+                        "Failed to write audio file %s from temp %s",
+                        filepath, temp_path,
                     )
                     # Clean up orphaned temp file
                     try:

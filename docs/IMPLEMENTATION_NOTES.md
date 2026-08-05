@@ -167,11 +167,13 @@ The bot uses `make_recording_after_callback()` to create a sync callback that:
 
 This ensures `/stop` does not call `end_session()` (which transitions to QUEUED) until all audio files have been written to disk and registered in the `audio_files` table. Without this, the transcriber could find zero files for a session and produce an empty transcript.
 
-#### Non-blocking file writes (disk-backed sink)
+#### Non-blocking file writes (disk-backed sink, WAV header fix)
 
-The async processing coroutine (`_process_recording`) runs on the event loop. The custom `TimestampedWaveSink` writes PCM data directly to temporary files on disk as packets arrive during recording. When the recording stops, the callback moves these temp files to their final paths. On the same filesystem this uses `os.rename()` (instant metadata operation); when `/tmp` and `/data` are on different filesystems (e.g. Docker overlay vs a bind-mounted volume), `os.rename` fails with `[Errno 18] Invalid cross-device link` and the code falls back to `shutil.move` via `asyncio.to_thread`, performing a copy+delete in a thread pool so the event loop isn't blocked. Speaker name resolution (guild member cache lookup, no I/O) and DB registration (`add_audio_file`) remain on the event loop.
+The async processing coroutine (`_process_recording`) runs on the event loop. The custom `TimestampedWaveSink` writes raw PCM data directly to temporary files on disk as packets arrive during recording. However, **the temp files contain only raw PCM — no WAV header**. py-cord's `WaveSink.format_audio()` (called by `AudioReader._stop()` via `sink.cleanup()`) reads the PCM data from the temp file, creates a new `BytesIO` with a proper WAV header + PCM data, and assigns it to `AudioData.file`. For the disk-backed `TimestampedWaveSink`, `format_audio()` is technically a no-op from the sink's perspective (the subclass overrides it) — py-cord's base-class `format_audio()` still runs, producing the WAV-formatted BytesIO, but the temp file on disk remains raw PCM.
 
-The old approach used `asyncio.to_thread(_write_audio_files_sync, file_specs)` to write WAV files from memory (BytesIO) to disk in a thread pool. The disk-backed sink replaces this with a single `os.rename()` per file, achieving the same non-blocking behaviour with less complexity.
+The after-callback (`_process_recording`) must **not** rename the raw-PCM temp file to `.wav` — soundfile/libsoundfile will reject it with "Format not recognised". Instead, it reads the WAV-formatted data from `audio_data.file` (the BytesIO that `format_audio()` created) and writes it to the final path via `_write_wav_file()`, which runs in `asyncio.to_thread()` so large files (~1.3 GB) don't block the event loop. The raw PCM temp file is then deleted with `os.unlink()`.
+
+Previously, the code used `os.rename()` to move the temp file to its final path, which worked when the temp file already contained a valid WAV header. This broke when the custom `TimestampedWaveSink` separated the PCM storage (on-disk temp file) from the WAV header application (in-memory BytesIO).
 
 #### Filename sanitisation
 
