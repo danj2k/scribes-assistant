@@ -65,12 +65,19 @@ class TimestampedWaveSink(WaveSink):
     merged transcript has correct dialogue ordering.
     """
 
-    def __init__(self, *, filters=None):
+    def __init__(self, *, filters=None, recording_start: float | None = None):
         super().__init__(filters=filters)
 
-        # Wall-clock time of the first packet from any user.
-        # This is the shared zero point for all speakers' timelines.
-        self._recording_start: float | None = None
+        # Shared zero point for all speakers' timelines.
+        # When recording_start is provided (from the /start command's
+        # monotonic clock), every user's WAV file is aligned to the
+        # same reference — not to whichever user happened to send the
+        # first audio packet.  This eliminates timeline shifts caused
+        # by per-user DAVE MLS handshake timing differences.
+        if recording_start is not None:
+            self._recording_start = recording_start
+        else:
+            self._recording_start = None
 
         # Per-user state, keyed by the user/member/object passed to write().
         # _last_rtp_ts: RTP timestamp of the previous packet (for DTX gap detection).
@@ -111,7 +118,10 @@ class TimestampedWaveSink(WaveSink):
         now = time.monotonic()
 
         with self._lock:
-            # Record the shared zero point on the very first packet.
+            # Set the shared zero point on the very first packet from any
+            # user, but only if an explicit recording_start wasn't already
+            # provided in __init__.  When it was, every user's WAV is
+            # aligned to the session-level reference from the start.
             if self._recording_start is None:
                 self._recording_start = now
 

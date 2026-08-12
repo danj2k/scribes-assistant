@@ -185,6 +185,43 @@ class TestInitialDelayPadding:
 
         assert sink._recording_start == 100.0
 
+    def test_explicit_recording_start_used_directly(self):
+        """When recording_start is given, it should be used directly and
+        never overridden by the first-packet lazy init."""
+        explicit_start = 42.0
+        sink = TimestampedWaveSink(recording_start=explicit_start)
+        # Must be set before any writes.
+        assert sink._recording_start == 42.0
+
+        user = MagicMock()
+        pcm = b"\x01" * _BYTES_PER_FRAME
+
+        # Even with a different monotonic time at write, the explicit
+        # recording_start should prevail.
+        with patch("bot.timestamped_sink.time.monotonic", return_value=100.0):
+            sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+
+        assert sink._recording_start == 42.0  # unchanged
+
+    def test_explicit_start_silence_padding(self):
+        """With an explicit recording_start, a user whose first packet
+        arrives after that start gets silence padding for the offset."""
+        explicit_start = 100.0
+        sink = TimestampedWaveSink(recording_start=explicit_start)
+        user = MagicMock()
+        pcm = b"\x01" * _BYTES_PER_FRAME
+
+        # User's first packet arrives 3 seconds after recording_start.
+        with patch("bot.timestamped_sink.time.monotonic", return_value=explicit_start + 3.0):
+            sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+
+        written = _get_user_audio(sink, user)
+        # Expected silence: 3.0 s of PCM silence.
+        expected_silence = int(3.0 * _SAMPLE_RATE * _CHANNELS * _SAMPLE_WIDTH)
+        assert len(written) == expected_silence + len(pcm)
+        assert written[:expected_silence] == b"\x00" * expected_silence
+        assert written[expected_silence:] == pcm
+
 
 # ---------------------------------------------------------------------------
 # DTX gap padding

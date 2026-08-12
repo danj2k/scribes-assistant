@@ -21,7 +21,7 @@ The result: Whisper timestamps from different speakers' WAV files are not compar
 
 `TimestampedWaveSink` (bot/timestamped_sink.py) fixes both problems by subclassing `WaveSink`:
 
-- **Initial offset** — on each user's first packet, pads their file with silence for the elapsed wall-clock time since recording start (the first packet from any user). Uses `time.monotonic()` because RTP timestamps are per-SSRC and not comparable across users.
+- **Initial offset** — on each user's first packet, pads their file with silence for the elapsed wall-clock time since recording start. The recording start is captured via `time.monotonic()` in `bot/commands.py` right before `start_recording()` is called, and passed to `TimestampedWaveSink` as the `recording_start` parameter. This means every user's WAV file shares the same session-level zero point, rather than being anchored to whichever user happened to send the first audio packet. This prevents timeline shifts when DAVE MLS handshakes complete at different times for different users. Uses `time.monotonic()` because RTP timestamps are per-SSRC and not comparable across users.
 - **DTX gaps** — on subsequent packets, if the RTP timestamp delta exceeds one frame, pads silence for the gap. The RTP timestamp marks the start of each packet's audio, so a gap of N frames means N-1 frames of silence between the end of the previous PCM and the start of the current one. Uses unsigned 32-bit subtraction for wraparound safety. Gaps exceeding 60 seconds are treated as SSRC resets and not padded.
 
 Opus frame constants: 48 kHz, 2 channels, 16-bit samples, 960 samples per frame (20 ms), 3840 bytes per frame. These are fixed by the Opus codec standard and Discord's voice transport.

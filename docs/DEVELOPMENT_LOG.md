@@ -1465,3 +1465,48 @@ After deploying the transcriber hotwords fix, the transcriber produced output bu
 **Tests:** 336 pass. Replaced `test_deliver_splits_long_transcript` with `test_deliver_attaches_transcript_file` — asserts `file` kwarg is passed to `thread.send()` and `discord.File` is constructed with the correct filename.
 
 **Documentation:** `docs/IMPLEMENTATION_NOTES.md` — Added "Transcript Delivery as File Attachment" section.
+
+## 2026-08-12 — Audio Timestamp Alignment Fix
+
+### Problem
+
+Audio timestamps in the merged transcript were shifted relative to different speakers. When a user's DAVE MLS handshake completed later than the first speaker's, their audio started arriving later, so `_recording_start` was set to the first audio packet from *any* user — not to a session-global reference. Each user's timeline was anchored to a different zero point, making inter-speaker timestamp comparison unreliable.
+
+**Example from a real 3-minute session:** llenikcud's audio arrived ~5 seconds after danj2k's. The transcript showed danj2k's `Yeah, I'm good, yeah` at [00:00] and llenikcud's `you being well anyone?` was lost entirely (spoken before their pipeline was ready). Later, both speakers' timelines drifted relative to each other due to the different zero points.
+
+### Root Cause
+
+`TimestampedWaveSink._recording_start` was set lazily in `write()` on the first audio packet arrival from any user. Because DAVE MLS handshakes complete at different times for different users (individual MLS adds may complete up to ~5s apart), the first packet could come from whichever user's decryption pipeline was ready first. This made `_recording_start` a per-session variable that varied between sessions but was always anchored to the DAVE pipeline winner, not the human action of `/start`.
+
+### Fix
+
+1. **`bot/commands.py`** — Captures `recording_start = time.monotonic()` right before `vc.start_recording()` and passes it to `TimestampedWaveSink(recording_start=recording_start)`.
+
+2. **`bot/timestamped_sink.py`** — `__init__()` accepts optional `recording_start: float | None = None`. When provided, it is used as the authoritative shared zero point. When omitted (None, backward-compatible default), the old lazy-init behaviour in `write()` takes over.
+
+3. **No transcriber changes needed** — the transcriber uses WAV-embedded timestamps and the database's `start_time` field, which are relative offsets within each file. With all files now sharing the same monotonic zero point, interleaved transcript merging produces correct chronological ordering.
+
+### Design Decisions
+
+- **`time.monotonic()`** chosen over wall-clock time because all downstream timestamp operations use monotonic time. This ensures consistency even during system sleep or clock adjustments.
+- **Passed from `commands.py`** rather than a global variable — keeps `TimestampedWaveSink` testable and encapsulated.
+- **Backward-compatible default** — legacy callers that construct `TimestampedWaveSink()` without the parameter still get the old first-packet-arrival behaviour.
+
+### Files Changed
+
+- `bot/commands.py` — capture `recording_start` before `start_recording()`, pass to sink (2 lines changed)
+- `bot/timestamped_sink.py` — accept `recording_start` in `__init__()`, use as authoritative start (8 lines changed)
+- `tests/test_timestamped_sink.py` — added two tests: `test_explicit_recording_start_used_directly` and `test_explicit_start_silence_padding` (37 lines added)
+- `docs/IMPLEMENTATION_NOTES.md` — updated "Initial offset" description to document the session-level zero point from `recording_start` parameter
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+### Tests
+
+25/25 pass (23 original + 2 new).
+- `test_explicit_recording_start_used_directly` — asserts `_recording_start` is set from constructor and never overridden by lazy init
+- `test_explicit_start_silence_padding` — asserts correct silence padding when a user's first packet arrives after the explicit start
+
+### Remaining Limitations
+
+- Audio spoken before a user's DAVE MLS handshake completes is still lost (Discord drops undecryptable packets). This is a DAVE protocol limitation, not a bot code issue.
+- Whisper duplicate segments within a single 28-second chunk (e.g. 25 identical "I use a radar." lines spaced exactly 1s apart) are a Whisper-internal token decoder loop, not caused by timestamp alignment.

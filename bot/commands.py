@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 import os
+import time
 
 import discord
 from discord.commands import SlashCommandGroup, Option
@@ -168,13 +169,21 @@ def setup_commands(bot: commands.Bot):
             # incomparable across speakers and scrambling dialogue order.
             # See bot/timestamped_sink.py for full details.
             #
+            # recording_start is captured right before start_recording()
+            # so every user's WAV file shares the same session-level zero
+            # point, rather than being anchored to whichever user happened
+            # to send the first audio packet.  This avoids timeline shifts
+            # when DAVE MLS handshakes complete at different times for
+            # different users.
+            #
             # We pass a dummy positional arg (None) because PR #3159's
             # AudioReader._stop() only fires the callback if self.args is
             # truthy: ``if self.after and self.args:``.  Without any *args,
             # self.args is an empty tuple (falsy) and the callback never runs.
             # The dummy arg is harmless — it's forwarded as *args to
             # after_cb, which ignores them.
-            sink = TimestampedWaveSink()
+            recording_start = time.monotonic()
+            sink = TimestampedWaveSink(recording_start=recording_start)
             after_cb, recording_done = make_recording_after_callback(
                 bot, session_id, guild_id, str(interaction.channel_id), sink,
             )
