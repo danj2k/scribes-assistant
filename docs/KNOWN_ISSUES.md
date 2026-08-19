@@ -20,6 +20,13 @@
 
 - **Whole-file audio read (fixed)**: `transcribe()` previously loaded the entire WAV file into memory via `sf.read(audio_path, dtype="float32")`. A 3-hour stereo 48 kHz recording allocates ~4 GB of RAM. Replaced with block-based reading using `sf.SoundFile` context manager — `seek()` + `read(frames=chunk_samples)` pulls one 28-second chunk at a time, downmixed to mono inline. Peak memory drops from ~4 GB to ~5 MB.
 
+- **Mono PCM written to stereo WAV header (fixed)**: `TimestampedWaveSink` in `bot/timestamped_sink.py` configured `sf.SoundFile` with `channels=2` (stereo) but Discord voice provides mono PCM via py-cord's Opus decoder (`CHANNELS=1`). This produced WAV files with a stereo header containing only left-channel data — the right channel duplicated the left with a one-sample offset. Sound playback libraries tolerated this, but the per-sample correlation anomaly (L[i] vs R[i-1] correlated at 1.0 while L[i] vs R[i] correlated at ~0) indicated the structural mismatch. Fixed by setting `CHANNELS=1` in `TimestampedWaveSink.__init__`, producing correct mono WAV files.
+
+- **Whisper hallucination of bracketed artifacts on silent audio (fixed)**: Whisper models hallucinate bracketed text artifacts (e.g. `[BLANK_AUDIO]`, `[Music]`, `[Silence]`, `[background noise]`, `(beep)`) when fed silence-padded audio. The `TimestampedWaveSink` pads DTX gaps and initial offsets with silence, creating long runs of zero-valued samples that trigger Whisper's hallucination behaviour. Fixed with a three-layer approach in `transcriber/worker.py`:
+  1. RMS energy gate (`_is_low_energy()`) — chunks with RMS < 0.01 are treated as silence and skipped entirely, before reaching the recogniser.
+  2. Post-processing text filter (`_filter_hallucinated_text()`) — 16 compiled regex patterns strip common bracketed hallucination artifacts from recognised text.
+  3. Confidence threshold (`--confidence-threshold`, default 0.3) — configurable via YAML config as `transcriber.confidence_threshold`. Acts as the RMS gate threshold. Accessible at runtime via `Config.confidence_threshold` property.
+
 ## Future Considerations
 
 - Campaign wiki integration (mentioned in design doc as potential extension)

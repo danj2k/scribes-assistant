@@ -82,8 +82,8 @@ class TestConstants:
     def test_sample_rate_is_48k(self):
         assert _SAMPLE_RATE == 48_000
 
-    def test_channels_is_stereo(self):
-        assert _CHANNELS == 2
+    def test_channels_is_mono(self):
+        assert _CHANNELS == 1
 
     def test_sample_width_is_16bit(self):
         assert _SAMPLE_WIDTH == 2
@@ -91,8 +91,8 @@ class TestConstants:
     def test_samples_per_frame_960(self):
         assert _SAMPLES_PER_FRAME == 960
 
-    def test_bytes_per_frame_3840(self):
-        assert _BYTES_PER_FRAME == 960 * 2 * 2
+    def test_bytes_per_frame_1920(self):
+        assert _BYTES_PER_FRAME == 960 * 1 * 2  # samples * channels * sample_width
 
     def test_frame_duration_20ms(self):
         """960 samples at 48 kHz = 20 ms — the Opus standard frame size."""
@@ -147,7 +147,7 @@ class TestInitialDelayPadding:
             sink.write(_make_voice_data(pcm, rtp_ts=0), user_b)
 
         written_b = _get_user_audio(sink, user_b)
-        # Expected silence: 2.0 s * 48000 Hz * 2 ch * 2 bytes = 384 000 bytes
+        # Expected silence: 2.0 s * 48000 Hz * 1 ch * 2 bytes = 192 000 bytes
         expected_silence = int(2.0 * _SAMPLE_RATE * _CHANNELS * _SAMPLE_WIDTH)
         assert len(written_b) == expected_silence + len(pcm)
         # First part is silence (all zeros).

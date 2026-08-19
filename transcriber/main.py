@@ -213,7 +213,7 @@ def run_worker(config_path: str | None = None):
 
             # Run transcription
             try:
-                result = worker.transcribe(filepath, hotwords=hotwords)
+                result = worker.transcribe(filepath, hotwords=hotwords, confidence_threshold=config.confidence_threshold)
                 if result is None:
                     raise RuntimeError('Transcription returned None')
 

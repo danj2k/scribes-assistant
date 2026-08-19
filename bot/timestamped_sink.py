@@ -29,11 +29,13 @@ This sink fixes both problems:
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import tempfile
 import threading
 import time
+import wave
 
 from discord.sinks import WaveSink
 from discord.sinks.core import AudioData, Filters
@@ -44,10 +46,10 @@ logger = logging.getLogger(__name__)
 # These are fixed by the Opus codec standard and Discord's voice
 # transport; they will not change at runtime.
 _SAMPLE_RATE: int = 48_000
-_CHANNELS: int = 2
+_CHANNELS: int = 1
 _SAMPLE_WIDTH: int = 2  # bytes per sample (16-bit signed)
 _SAMPLES_PER_FRAME: int = 960  # 48 000 Hz * 20 ms
-_BYTES_PER_FRAME: int = _SAMPLES_PER_FRAME * _CHANNELS * _SAMPLE_WIDTH  # 3 840
+_BYTES_PER_FRAME: int = _SAMPLES_PER_FRAME * _CHANNELS * _SAMPLE_WIDTH  # 1 920
 
 # Maximum plausible RTP timestamp gap (60 s of frames at 48 kHz).
 # Gaps larger than this almost certainly indicate an SSRC reset (the
@@ -180,3 +182,27 @@ class TimestampedWaveSink(WaveSink):
                 self._last_rtp_ts[user] = rtp_ts
 
             self.audio_data[user].write(pcm)
+
+    def format_audio(self, audio_data):
+        """Override to write a mono WAV header.
+
+        Discord voice per-user streams are mono. The Opus decoder outputs
+        mono PCM even when configured with ``CHANNELS=2``, because each
+        user sends their own mono audio to the Discord voice server.  The
+        base ``WaveSink.format_audio()`` writes a stereo header (using
+        ``self.vc.decoder.CHANNELS``), which causes soundfile/numpy to
+        read the PCM data as stereo interleaved — compressing the audio
+        timeline by half.
+
+        This override writes a correct mono WAV header (1 channel, 16-bit,
+        48 kHz) so the PCM data is read as a single mono stream.
+        """
+        audio_data.file.seek(0)
+        data = audio_data.file.read()
+        result = io.BytesIO()
+        with wave.open(result, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)  # 16-bit PCM
+            f.setframerate(_SAMPLE_RATE)
+            f.writeframes(data)
+        audio_data.file = result

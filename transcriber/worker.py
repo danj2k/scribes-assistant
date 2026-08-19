@@ -4,6 +4,7 @@ Handles model loading and audio file transcription.
 """
 
 import os
+import re
 import hashlib
 import tarfile
 import time
@@ -12,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
+
+import numpy as np
 
 from shared.tar_utils import safe_extract_members
 
@@ -29,6 +32,36 @@ except ImportError:
 import urllib.request
 
 logger = logging.getLogger(__name__)
+
+
+# RMS energy threshold below which chunks are considered silence.
+# Chunks below this RMS are skipped entirely — they'd produce
+# hallucinated transcripts (bracketed sound effects, "[BLANK_AUDIO]", etc.)
+# rather than meaningful speech.  Tuned empirically for 16 kHz float32 audio.
+_RMS_THRESHOLD: float = 0.01
+
+# Regex patterns that match common sherpa-onnx / Whisper hallucination
+# artifacts — bracketed sound effects and atmosphere descriptions that
+# appear when the model is fed silence or near-silence.
+_HALLUCINATION_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\[BLANK_AUDIO\]", re.IGNORECASE),
+    re.compile(r"\[Music\]", re.IGNORECASE),
+    re.compile(r"\[MUSIC\]", re.IGNORECASE),
+    re.compile(r"\(music\)", re.IGNORECASE),
+    re.compile(r"\(gun ?shots?\)", re.IGNORECASE),
+    re.compile(r"\(gunshot(s)?\)", re.IGNORECASE),
+    re.compile(r"\[Applause\]", re.IGNORECASE),
+    re.compile(r"\[Sound Effects\]", re.IGNORECASE),
+    re.compile(r"\[Background Noise\]", re.IGNORECASE),
+    re.compile(r"\[Laughter\]", re.IGNORECASE),
+    re.compile(r"\[Tones\]", re.IGNORECASE),
+    re.compile(r"\[Beep\]", re.IGNORECASE),
+    re.compile(r"\(beep\)", re.IGNORECASE),
+    re.compile(r"\(silence\)", re.IGNORECASE),
+    re.compile(r"\[Silence\]", re.IGNORECASE),
+    re.compile(r"\[sigh\]", re.IGNORECASE),
+    re.compile(r"\(sigh\)", re.IGNORECASE),
+]
 
 
 @dataclass
@@ -54,6 +87,45 @@ class TranscriptionResult:
     """
     text: str
     segments: list[TranscriptSegment] = field(default_factory=list)
+
+
+def _is_low_energy(chunk: np.ndarray, threshold: float = _RMS_THRESHOLD) -> bool:
+    """Return True if the chunk's RMS energy is below *threshold*.
+
+    Chunks dominated by silence or near-silence produce consistent
+    bracketed hallucination artifacts rather than meaningful speech.
+    Skipping them early saves compute and avoids polluting the transcript.
+    """
+    if len(chunk) == 0:
+        return True
+    rms = np.sqrt(np.mean(chunk**2))
+    return rms < threshold
+
+
+def _filter_hallucinated_text(text: str) -> str:
+    """Remove known hallucination patterns from transcribed text.
+
+    Returns the text with matches replaced by empty string, then
+    collapsed (leading/trailing whitespace stripped, internal runs
+    of whitespace normalised).
+    """
+    for pattern in _HALLUCINATION_PATTERNS:
+        text = pattern.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _filter_hallucinated_segments(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    """Remove segments whose text is entirely a hallucination pattern."""
+    filtered: list[TranscriptSegment] = []
+    for seg in segments:
+        cleaned = _filter_hallucinated_text(seg.text)
+        if cleaned:
+            filtered.append(TranscriptSegment(
+                start_time=seg.start_time, text=cleaned,
+            ))
+    return filtered
 
 
 class TranscriptionWorker:
@@ -101,7 +173,8 @@ class TranscriptionWorker:
             logger.error("Failed to load model: %s", e)
             raise
 
-    def transcribe(self, audio_path: str, hotwords: Optional[str] = None) -> Optional[TranscriptionResult]:
+    def transcribe(self, audio_path: str, hotwords: Optional[str] = None,
+                   confidence_threshold: float = 0.3) -> Optional[TranscriptionResult]:
         """Transcribe an audio file. Returns TranscriptionResult or None on error.
 
         sherpa-onnx Whisper only processes the first 30 seconds of audio and
@@ -110,10 +183,17 @@ class TranscriptionWorker:
         each chunk's segment timestamps by the chunk's start time so the final
         merged segments are chronological across the entire file.
 
+        Chunks whose RMS energy falls below *confidence_threshold* are silently
+        skipped — they produce hallucinated bracketed artifacts rather than
+        meaningful speech.  Remaining transcriptions are post-filtered against a
+        set of known hallucination patterns.
+
         Args:
             audio_path: Path to the WAV file to transcribe.
             hotwords: Optional sherpa-onnx hotwords string ("Term1/Term2").
                       Applies a hard decoding bias for phonetic matches.
+            confidence_threshold: RMS energy floor (0.0–1.0).  Chunks with less
+                energy are treated as silence and skipped.  Default 0.3.
         """
         if not self.recognizer:
             raise RuntimeError("Model not loaded. Call load_model() first.")
@@ -147,6 +227,12 @@ class TranscriptionWorker:
                     if chunk.ndim > 1:
                         chunk = chunk.mean(axis=1)
 
+                    # Skip chunks that are too quiet — they'd produce
+                    # hallucinated bracketed artifacts rather than speech.
+                    if _is_low_energy(chunk, threshold=confidence_threshold):
+                        frame_offset += chunk_samples
+                        continue
+
                     chunk_start_sec = frame_offset / sample_rate
 
                     if len(chunk) < sample_rate * 0.1:
@@ -159,10 +245,15 @@ class TranscriptionWorker:
 
                     result = stream.result
                     chunk_text = result.text.strip()
+                    # Apply hallucination pattern filter to the raw text
+                    chunk_text = _filter_hallucinated_text(chunk_text)
                     if chunk_text:
                         all_text_parts.append(chunk_text)
 
                     chunk_segments = self._build_segments(result)
+                    # Filter segments whose text is entirely hallucination,
+                    # and clean remaining segments of hallucination patterns.
+                    chunk_segments = _filter_hallucinated_segments(chunk_segments)
                     # Offset each segment's start_time by the chunk's offset
                     # so timestamps are relative to the start of the full file.
                     for seg in chunk_segments:
