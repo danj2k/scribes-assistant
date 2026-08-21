@@ -29,6 +29,8 @@ This sink fixes both problems:
 
 from __future__ import annotations
 
+import array
+import io
 import logging
 import os
 import tempfile
@@ -44,10 +46,10 @@ logger = logging.getLogger(__name__)
 # These are fixed by the Opus codec standard and Discord's voice
 # transport; they will not change at runtime.
 _SAMPLE_RATE: int = 48_000
-_CHANNELS: int = 2
+_CHANNELS: int = 1  # Mono — Discord per-user streams are mono
 _SAMPLE_WIDTH: int = 2  # bytes per sample (16-bit signed)
 _SAMPLES_PER_FRAME: int = 960  # 48 000 Hz * 20 ms
-_BYTES_PER_FRAME: int = _SAMPLES_PER_FRAME * _CHANNELS * _SAMPLE_WIDTH  # 3 840
+_BYTES_PER_FRAME: int = _SAMPLES_PER_FRAME * _CHANNELS * _SAMPLE_WIDTH  # 1 920
 
 # Maximum plausible RTP timestamp gap (60 s of frames at 48 kHz).
 # Gaps larger than this almost certainly indicate an SSRC reset (the
@@ -106,7 +108,7 @@ class TimestampedWaveSink(WaveSink):
         from discord.voice.packets import VoiceData
 
         if isinstance(data, VoiceData):
-            pcm = data.pcm
+            pcm = self._pcm_to_mono(data.pcm)
             rtp_ts = getattr(data.packet, "timestamp", None)
         else:
             pcm = data
@@ -180,3 +182,41 @@ class TimestampedWaveSink(WaveSink):
                 self._last_rtp_ts[user] = rtp_ts
 
             self.audio_data[user].write(pcm)
+
+    def _pcm_to_mono(self, pcm: bytes) -> bytes:
+        """Downmix stereo PCM to mono.
+
+        py-cord's ``opus.Decoder`` uses ``CHANNELS = 2`` (stereo).  For
+        a mono Discord stream, the decoded output contains R[i] = L[i+1]
+        (a 1-sample offset), which corrupts the waveform and causes
+        Whisper to hallucinate.  Taking every other sample (the left
+        channel) recovers the clean mono signal.
+
+        The silence padding elsewhere in this module uses
+        ``_BYTES_PER_FRAME = 1920`` (mono).  Downmixing here keeps the
+        PCM frame size consistent with the silence padding.
+        """
+        if not pcm:
+            return pcm
+        arr = array.array("h", pcm)
+        return array.array("h", arr[0::2]).tobytes()
+
+    def format_audio(self, audio_data):
+        """Override to write a mono WAV header.
+
+        Discord voice per-user streams are mono.  The base
+        ``WaveSink.format_audio()`` writes header channels from
+        ``self.vc.decoder.CHANNELS``, which is ``2``, even though the
+        audio data is already downmixed to mono by ``_pcm_to_mono()``.
+        This override writes a correct mono WAV header (1 channel,
+        16-bit, 48 kHz).
+        """
+        audio_data.file.seek(0)
+        data = audio_data.file.read()
+        result = io.BytesIO()
+        with wave.open(result, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)  # 16-bit PCM
+            f.setframerate(_SAMPLE_RATE)
+            f.writeframes(data)
+        audio_data.file = result
