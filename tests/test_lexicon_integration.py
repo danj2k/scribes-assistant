@@ -18,7 +18,7 @@ class TestTranscriptionWorkerHotwords:
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
             # Short audio (< 28s) → single chunk, one create_stream call
-            mock_audio = np.random.uniform(-1, 1, 16000).astype(np.float32)
+            mock_audio = np.zeros(16000, dtype="float32")
             mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
 
             w = TranscriptionWorker("/tmp/model")
@@ -36,7 +36,7 @@ class TestTranscriptionWorkerHotwords:
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = np.random.uniform(-1, 1, 16000).astype(np.float32)
+            mock_audio = np.zeros(16000, dtype="float32")
             mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
 
             w = TranscriptionWorker("/tmp/model")
@@ -55,7 +55,7 @@ class TestTranscriptionWorkerHotwords:
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = np.random.uniform(-1, 1, 16000).astype(np.float32)
+            mock_audio = np.zeros(16000, dtype="float32")
             mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
 
             w = TranscriptionWorker("/tmp/model")

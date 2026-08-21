@@ -136,7 +136,7 @@ class TestWorkerTranscribe:
         from transcriber.worker import TranscriptionWorker
 
         # Short audio (< 28s) → single chunk, one create_stream call
-        audio = np.random.uniform(-1, 1, 16000).astype(np.float32)  # 1 second
+        audio = np.zeros(16000, dtype="float32")  # 1 second
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -163,7 +163,7 @@ class TestWorkerTranscribe:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.random.uniform(-1, 1, 16000).astype(np.float32)  # 1 second
+        audio = np.zeros(16000, dtype="float32")  # 1 second
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -197,7 +197,7 @@ class TestTranscribeNoNumpyToList:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.random.uniform(-1, 1, 16000).astype(np.float32)  # 1 second
+        audio = np.zeros(16000, dtype="float32")  # 1 second
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -230,7 +230,7 @@ class TestTranscribeNoNumpyToList:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.random.uniform(-1, 1, 16000).astype(np.float32)  # 1 second
+        audio = np.zeros(16000, dtype="float32")  # 1 second
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -263,7 +263,7 @@ class TestTranscribeNoNumpyToList:
         from transcriber.worker import TranscriptionWorker
 
         # Stereo audio: 1 second, 2 channels
-        stereo = np.random.uniform(-1, 1, (16000, 2)).astype(np.float32)
+        stereo = np.zeros((16000, 2), dtype="float32")
         mock_sf.SoundFile = _make_mock_sf(stereo).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -303,7 +303,7 @@ class TestAudioChunking:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.random.uniform(-1, 1, 16000 * 10).astype(np.float32)  # 10 seconds
+        audio = np.zeros(16000 * 10, dtype="float32")  # 10 seconds
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -327,7 +327,7 @@ class TestAudioChunking:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.random.uniform(-1, 1, 16000 * 60).astype(np.float32)  # 60 seconds
+        audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -353,7 +353,7 @@ class TestAudioChunking:
         from transcriber.worker import TranscriptionWorker
 
         # 60s of audio → 3 chunks: 0-28s, 28-56s, 56-60s
-        audio = np.random.uniform(-1, 1, 16000 * 60).astype(np.float32)
+        audio = np.zeros(16000 * 60, dtype="float32")
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")
@@ -389,7 +389,7 @@ class TestAudioChunking:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.random.uniform(-1, 1, 16000 * 60).astype(np.float32)  # 60 seconds
+        audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
 
         worker = TranscriptionWorker(model_path="/tmp/models")

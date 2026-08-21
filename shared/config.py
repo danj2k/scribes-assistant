@@ -42,7 +42,6 @@ _DEFAULTS = {
         "threads": 0,
         "model": "small",
         "model_dir": "/data/models",
-        "confidence_threshold": 0.3,
     },
     "logging": {
         "level": "INFO",
@@ -216,16 +215,6 @@ class Config:
         """
         base = self.get("transcriber.model_dir", "/data/models")
         return os.path.join(base, f"whisper-{self.model_size}")
-
-    @property
-    def confidence_threshold(self) -> float:
-        """RMS energy floor for Whisper transcription.
-
-        Chunks below this threshold are treated as silence and skipped,
-        avoiding hallucinated bracketed artifacts (e.g. "[BLANK_AUDIO]").
-        Range 0.0-1.0.  Default 0.3.
-        """
-        return float(self.get("transcriber.confidence_threshold", 0.3))
 
     @property
     def sample_rate(self) -> int:
