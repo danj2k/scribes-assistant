@@ -82,8 +82,8 @@ class TestConstants:
     def test_sample_rate_is_48k(self):
         assert _SAMPLE_RATE == 48_000
 
-    def test_channels_is_stereo(self):
-        assert _CHANNELS == 2
+    def test_channels_is_mono(self):
+        assert _CHANNELS == 1
 
     def test_sample_width_is_16bit(self):
         assert _SAMPLE_WIDTH == 2
@@ -91,8 +91,8 @@ class TestConstants:
     def test_samples_per_frame_960(self):
         assert _SAMPLES_PER_FRAME == 960
 
-    def test_bytes_per_frame_3840(self):
-        assert _BYTES_PER_FRAME == 960 * 2 * 2
+    def test_bytes_per_frame_1920(self):
+        assert _BYTES_PER_FRAME == 960 * 1 * 2  # mono, 16-bit
 
     def test_frame_duration_20ms(self):
         """960 samples at 48 kHz = 20 ms — the Opus standard frame size."""
@@ -477,3 +477,107 @@ class TestThreadSafety:
         # (rtp_ts=0 every time means gap=0, which is < _SAMPLES_PER_FRAME.)
         expected_len = num_threads * writes_per_thread * _BYTES_PER_FRAME
         assert len(written) == expected_len
+
+
+# ---------------------------------------------------------------------------
+# format_audio() -- mono WAV header override
+# ---------------------------------------------------------------------------
+
+
+class TestFormatAudio:
+    """Verify that format_audio() writes a correct mono WAV from raw PCM.
+
+    The override replaces the stereo header from WaveSink.format_audio() with
+    a correct mono header (1 channel, 16-bit, 48 kHz).
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_pcm(num_samples: int, value: int = 0) -> bytes:
+        """Generate ``num_samples`` mono 16-bit PCM samples of the given value.
+
+        Each sample is 2 bytes (little-endian signed 16-bit).
+        """
+        return value.to_bytes(2, "little", signed=True) * num_samples
+
+    @staticmethod
+    def _open_wav(file: io.BytesIO):
+        """Open a BytesIO as a WAV file and return the wave.Wave_read object."""
+        import wave
+
+        file.seek(0)
+        return wave.open(file, "rb")
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def test_format_audio_produces_valid_wav(self):
+        """Given 1 second of mono PCM, format_audio() produces a valid WAV
+        whose content exactly matches the input."""
+        from discord.sinks import AudioData
+
+        num_samples = _SAMPLE_RATE  # 1 second at 48 kHz
+        pcm = self._make_pcm(num_samples, value=42)
+        audio_data = AudioData(file=io.BytesIO(pcm))
+
+        sink = _make_sink()
+        sink.format_audio(audio_data)
+
+        wav = self._open_wav(audio_data.file)
+        assert wav.getnchannels() == 1, "must be mono"
+        assert wav.getsampwidth() == 2, "must be 16-bit"
+        assert wav.getframerate() == _SAMPLE_RATE, "must be 48 kHz"
+        assert wav.getnframes() == num_samples, "must preserve sample count"
+        result_pcm = wav.readframes(num_samples)
+        assert result_pcm == pcm, "PCM data must be preserved verbatim"
+
+    def test_format_audio_empty_pcm(self):
+        """An empty PCM buffer (zero-length data) produces a valid zero-length
+        WAV with correct header values but no frames."""
+        from discord.sinks import AudioData
+
+        audio_data = AudioData(file=io.BytesIO(b""))
+
+        sink = _make_sink()
+        sink.format_audio(audio_data)
+
+        wav = self._open_wav(audio_data.file)
+        assert wav.getnchannels() == 1
+        assert wav.getsampwidth() == 2
+        assert wav.getframerate() == _SAMPLE_RATE
+        assert wav.getnframes() == 0
+
+    def test_format_audio_writes_mono_header(self):
+        """The WAV header declares exactly 1 channel -- the core fix for the
+        0-byte .wav bug (the original WaveSink wrote stereo headers for mono
+        data)."""
+        from discord.sinks import AudioData
+
+        pcm = self._make_pcm(_SAMPLES_PER_FRAME, value=128)
+        audio_data = AudioData(file=io.BytesIO(pcm))
+
+        sink = _make_sink()
+        sink.format_audio(audio_data)
+
+        wav = self._open_wav(audio_data.file)
+        assert wav.getnchannels() == 1
+
+    def test_format_audio_replaces_file_attribute(self):
+        """After format_audio(), audio_data.file must be a new BytesIO (not the
+        original raw PCM)."""
+        from discord.sinks import AudioData
+
+        original = io.BytesIO(self._make_pcm(_SAMPLES_PER_FRAME))
+        audio_data = AudioData(file=original)
+
+        sink = _make_sink()
+        sink.format_audio(audio_data)
+
+        # The file should now be a WAV BytesIO, not the original
+        assert audio_data.file is not original
+        # It must still be seekable and readable as WAV
+        self._open_wav(audio_data.file)

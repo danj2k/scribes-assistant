@@ -1510,3 +1510,32 @@ Audio timestamps in the merged transcript were shifted relative to different spe
 
 - Audio spoken before a user's DAVE MLS handshake completes is still lost (Discord drops undecryptable packets). This is a DAVE protocol limitation, not a bot code issue.
 - Whisper duplicate segments within a single 28-second chunk (e.g. 25 identical "I use a radar." lines spaced exactly 1s apart) are a Whisper-internal token decoder loop, not caused by timestamp alignment.
+
+## 2026-08-27 — Fix: 0-byte WAV files (missing import wave) + mono constants test fixes
+
+### Problem
+
+Formatting audio with `format_audio()` produced 0-byte WAV files. Root cause: the function called `wave.open()` without importing the `wave` module, triggering a `NameError` at runtime. The exception was caught by a bare `except:` in the caller (`_finalise_transcript()` in `bot/commands.py`), so no error logged — the 0-byte file was silently written.
+
+Additionally, `TestConstants` had a test named `test_channels_is_stereo` asserting `_CHANNELS == 2` and `_BYTES_PER_FRAME == 3840`, but the actual constants were mono (1 channel, 1920 bytes per frame). This was a stale assumption from an earlier stereo design that was changed to mono but the constants test was not updated.
+
+### Fix
+
+1. **`bot/timestamped_sink.py`** — Added `import wave` at the module level (line 39). Fixes the `NameError` and produces valid WAV output.
+
+2. **`tests/test_timestamped_sink.py`** — Renamed `test_channels_is_stereo` to `test_channels_is_mono` and updated assertions to match actual constants (`_CHANNELS == 1`, `_BYTES_PER_FRAME == 1920`). Confirmed all 6 `TestConstants` tests pass.
+
+3. **New `TestFormatAudio` class (4 tests)** — Exercises `format_audio()` with synthetic mono PCM:
+   - `test_format_audio_produces_valid_wav` — reads back the WAV, checks RIFF header, sample rate, channels, sample width, frame count.
+   - `test_format_audio_empty_pcm` — empty input produces a valid WAV with 0 data bytes.
+   - `test_format_audio_writes_mono_header` — explicitly asserts `nchannels == 1` and `sampwidth == 2` in the generated WAV.
+   - `test_format_audio_replaces_file_attribute` — confirms `audio_data.file` is replaced with the new WAV `BytesIO`.
+
+### Files Changed
+
+- `bot/timestamped_sink.py` — added `import wave` (1 line)
+- `tests/test_timestamped_sink.py` — renamed `test_channels_is_stereo` to `test_channels_is_mono`, updated assertions, added `TestFormatAudio` class (112 lines changed total)
+
+### Tests
+
+10/10 pass (6 `TestConstants` + 4 `TestFormatAudio`). All 4 pre-existing `TestInitialDelayPadding` failures are independent (stereo-padding assumptions in legacy tests, not touched here).

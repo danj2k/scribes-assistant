@@ -36,6 +36,7 @@ import os
 import tempfile
 import threading
 import time
+import wave
 
 from discord.sinks import WaveSink
 from discord.sinks.core import AudioData, Filters
