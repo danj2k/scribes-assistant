@@ -798,11 +798,17 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
         callback is never invoked.  We pass a dummy arg (None) at the
         call site to satisfy this check.
 
+        ``*args`` forwards py-cord's callback arguments — historically the
+        first positional arg is an optional ``Exception | None`` — through
+        to ``_process_recording()`` so error handling can examine them.
+
         The _processing_started guard ensures we only process audio once
         even if the callback is somehow invoked twice.
         """
         if _processing_started:
             return
-        asyncio.run_coroutine_threadsafe(_process_recording(None), loop)
+        asyncio.run_coroutine_threadsafe(
+            _process_recording(args[0] if args else None), loop
+        )
 
     return after_cb, done_future
