@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import io
+import math
 import os
+import struct
 import sys
+import wave
 import tempfile
 import types
 from unittest.mock import MagicMock, patch
@@ -496,3 +500,81 @@ class TestMakeRecordingAfterCallback:
         assert "/" not in wav_paths[0].split("/")[-1], \
             f"Filename contains slash: {wav_paths[0]}"
         assert wav_paths[0].endswith("Duckinell_DM.wav")
+
+    async def test_output_wav_is_valid(self, mock_file_io):
+        """Written WAV files must be valid WAV with correct headers and audio data.
+
+        Regression test for the zero-byte output bug caused by
+        format_audio() not writing back the WAV BytesIO to
+        audio_data.file. Without that assignment, audio_data.file
+        still pointed at the raw-PCM temp file at EOF, producing
+        zero-byte files on disk.
+        """
+        from io import BytesIO
+
+        # Build a genuine 1-second mono 16-bit 48kHz WAV file
+        # with a 440 Hz sine wave.
+        sample_rate = 48000
+        duration_samples = sample_rate  # 1 second
+        raw_pcm = struct.pack(
+            f"<{duration_samples}h",
+            *(int(0.5 * 32767 * math.sin(2 * math.pi * 440.0 * i / sample_rate))
+              for i in range(duration_samples)),
+        )
+
+        buf = BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(raw_pcm)
+        wav_bytes = buf.getvalue()
+
+        # Sanity check our fixture is valid
+        assert len(wav_bytes) > 44, "WAV header + data must exceed header-only"
+        assert wav_bytes[:4] == b"RIFF"
+        assert wav_bytes[8:12] == b"WAVE"
+
+        db = FakeDB()
+        bot = FakeBot(db)
+        sink = FakeSink({FakeUser(42): FakeAudioData(wav_bytes)})
+
+        after_cb, future = make_recording_after_callback(
+            bot, "test-session", "123", "456", sink,
+        )
+        after_cb(sink)
+        await asyncio.wait_for(future, timeout=5.0)
+
+        # Retrieve the bytes the callback wrote via mock_file_io
+        wav_paths = [p for p in mock_file_io if p.endswith("42.wav")]
+        assert len(wav_paths) == 1, f"Expected one .wav but got {list(mock_file_io)}"
+        written_bytes = mock_file_io[wav_paths[0]]
+
+        # === Validity checks ===
+
+        # 1. File is non-empty
+        assert len(written_bytes) > 44, (
+            f"Written WAV is too small to have a header: {len(written_bytes)} bytes"
+        )
+
+        # 2. RIFF / WAVE signature
+        assert written_bytes[:4] == b"RIFF"
+        assert written_bytes[8:12] == b"WAVE"
+
+        # 3. Can be parsed by Python's wave module
+        with wave.open(BytesIO(written_bytes), "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == sample_rate
+            assert wf.getnframes() == duration_samples
+
+        # 4. Audio content is preserved round-trip
+        with wave.open(BytesIO(written_bytes), "rb") as wf:
+            decoded = wf.readframes(wf.getnframes())
+        assert decoded == raw_pcm, (
+            "Decoded audio frames do not match the original PCM data"
+        )
+
+        # 5. DB records a non-zero size matching the written file
+        assert db.audio_files[0]["size_bytes"] > 44
+        assert db.audio_files[0]["size_bytes"] == len(written_bytes)
