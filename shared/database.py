@@ -206,6 +206,22 @@ class Database:
                 (now, STATUS_FAILED, session_id),
             )
 
+    def get_orphaned_sessions(self) -> list[dict]:
+        """Return sessions stuck in 'recording' status with no ended_at.
+
+        A session stuck in 'recording' status across a restart means the
+        bot was killed before the session could end normally — the in-memory
+        recording state (voice client, sink, futures) was lost.  These are
+        orphaned and must be failed on startup so the guild can start a
+        new recording.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM sessions WHERE status = ? AND ended_at IS NULL",
+                (STATUS_RECORDING,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
     def get_queued_sessions_without_files(self) -> list[dict]:
         """Return queued sessions that have zero audio files.
 

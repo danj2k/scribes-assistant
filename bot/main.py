@@ -125,6 +125,27 @@ class ScribesBot(commands.Bot):
         # confirms the bot is genuinely connected.
         await self._write_heartbeat()
 
+        # Recover orphaned recording sessions — sessions left in 'recording'
+        # status across a restart have no in-memory state (voice client, sink,
+        # futures) and cannot be ended normally.  Fail them so the guild can
+        # record again.
+        orphaned = self.db.get_orphaned_sessions()
+        if orphaned:
+            logger.warning(
+                f"Found {len(orphaned)} orphaned recording session(s) "
+                f"from a previous instance — failing them"
+            )
+            for sess in orphaned:
+                session_id = sess["id"]
+                guild_id = sess["discord_guild_id"]
+                logger.info(
+                    f"Failing orphaned session {session_id} "
+                    f"(guild={guild_id})"
+                )
+                self.db.fail_session(session_id)
+        else:
+            logger.info("No orphaned recording sessions found")
+
         # Start the periodic heartbeat task if not already running
         if self._heartbeat_task is None or self._heartbeat_task.done():
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
