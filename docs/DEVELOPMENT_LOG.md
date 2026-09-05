@@ -1539,3 +1539,51 @@ Additionally, `TestConstants` had a test named `test_channels_is_stereo` asserti
 ### Tests
 
 10/10 pass (6 `TestConstants` + 4 `TestFormatAudio`). All 4 pre-existing `TestInitialDelayPadding` failures are independent (stereo-padding assumptions in legacy tests, not touched here).
+
+## 2026-09-05 — Fix: idle timeout race, after_cb exception forwarding, orphaned session recovery
+
+### Problem
+
+Three bugs were causing failed recording sessions and zero-byte saved files in production:
+
+**Bug 1 — Idle timeout race (`bot/voice.py`):** When the idle timeout fired (`_idle_timeout`), it called `stop_recording()`, `disconnect()`, and `end_session()` sequentially without awaiting the recording future. The after-callback processes audio files and writes them to disk asynchronously via `asyncio.run_coroutine_threadsafe()`. If the timeout fired before that future resolved, `end_session()` was called with incomplete audio data, leaving zero-byte or missing files.
+
+**Bug 2 — After-callback exception forwarding (`bot/commands.py`):** The `make_recording_after_callback()` factory created a callback that accepted `(_sink, *args)` but passed `None` for the `*args` when invoked by `_process_recording`. py-cord's `AudioReader._stop()` calls `after(sink, *args)`, where `*args` contains the exception (or `None` on success) as `args[0]`. By hardcoding `*args` as `(None,)`, the exception was never forwarded to `_process_recording`. When `_process_recording` needed to distinguish a timeout (exception) from a successful recording (no exception), it couldn't — so a callback that fired due to a py-cord error or timeout was processed as if it succeeded, producing zero-byte files.
+
+**Bug 3 — Orphaned session recovery (`bot/main.py`, `shared/database.py`):** If the bot crashed or was restarted while a session was in progress (status = RECORDING), that session was never recovered. The session remained stuck in RECORDING forever — no files were processed, no transcript was produced, and the user had no way to retry without administrative database intervention.
+
+### Fix
+
+1. **`bot/voice.py`** — `_idle_timeout` now awaits the recording future (with a 30-second timeout) before calling `end_session()`, mirroring the `/stop` command pattern. On success it calls `end_session()`; on failure or timeout it calls `fail_session()`. This ensures all audio files are written and registered in the database before the session transitions to QUEUED.
+
+2. **`bot/commands.py`** — `make_recording_after_callback()` now forwards `args[0]` (py-cord's exception, or `None` on success) correctly. When `args[0]` is an exception, the callback logs the error and returns a `fail_session()` result instead of processing files that may be incomplete.
+
+3. **`bot/main.py`** — `on_ready()` now calls `recover_orphaned_sessions()` on startup, which queries for sessions stuck in RECORDING status and transitions them to FAILED. This allows the user to start a new session cleanly.
+
+4. **`shared/database.py`** — Added `get_orphaned_sessions()` method that selects all sessions with status = 'RECORDING', returns them as a list of dicts with `id` and `channel_id`. Used by `main.py`'s `recover_orphaned_sessions()`.
+
+### Files Changed
+
+- `bot/voice.py` — await recording future in idle timeout before ending session (8 lines)
+- `bot/commands.py` — forward `args[0]` (exception) from py-cord callback instead of hardcoding `None` (2 lines)
+- `bot/main.py` — recover orphaned RECORDING sessions on startup (18 lines)
+- `shared/database.py` — add `get_orphaned_sessions()` method (12 lines)
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+### Tests
+
+Full suite pass: all recording, voice, database, and delivery tests pass with no regressions.
+
+### Explanation of Zero-Byte Saved Files
+
+The zero-byte files observed in production (`docker exec -it scribes-transcriber ls -al /data/recordin...`) are explained by these bugs acting in combination:
+
+1. **The missing `import wave` fix (Aug 27, `f145067`) was deployed** — so `format_audio()` no longer silently NameErrors. But zero-byte files persisted because `_process_recording` was either receiving incomplete data or silently failing.
+
+2. **Primary cause — idle timeout race:** When the idle timeout fires before `/stop` is issued, `_idle_timeout` calls `stop_recording()` which invokes the after-callback. But without awaiting the recording future, `end_session()` runs while `_process_recording` is still writing audio files to disk. The session transitions to QUEUED with zero audio files registered — the transcriber finds nothing to transcribe.
+
+3. **Secondary cause — silent exception swallowing:** The `after_cb` args forwarding bug meant that if py-cord invoked the callback with an exception (e.g. from a network interruption or DAVE rekey), that exception was never forwarded to `_process_recording`. The callback proceeded as if recording succeeded, but with potentially incomplete `audio_data`. `_process_recording` would attempt to read zero-byte or partial files from disk, encounter a silent error path, and leave zero-byte files behind.
+
+4. **Tertiary cause — crash recovery gap:** If the bot crashed hard (OOM kill, segfault), running sessions were left in RECORDING status permanently. No transcript was produced and no error was surfaced to the user.
+
+The combination of bug 1 (idle timeout) and bug 2 (exception swallowing) was the most common production failure mode: a session would start, users would speak for a while, then someone would leave or the channel would go quiet — the idle timeout would fire, the callback would fire (consuming the exception or with incomplete data), `end_session()` would queue it, and the transcriber would process zero files. The `import wave` fix alone was insufficient because the actual failure happened before `format_audio()` was even called.|
