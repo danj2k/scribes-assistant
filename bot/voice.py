@@ -112,9 +112,10 @@ async def _idle_timeout(bot, guild, voice_client):
             # mark as failed so the session doesn't block future recordings.
             if not audio_count:
                 if audio_count is None:
-                    # Callback never fired — ensure session is marked failed
-                    # so it doesn't linger as ACTIVE.
-                    db.fail_session(session_id)
+                    # No recording future existed — the callback either already
+                    # completed synchronously or recording was never in-flight.
+                    # End the session normally.
+                    db.end_session(session_id)
                 else:
                     # Zero audio files; callback already called fail_session()
                     pass
