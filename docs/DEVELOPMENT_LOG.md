@@ -1574,6 +1574,12 @@ Three bugs were causing failed recording sessions and zero-byte saved files in p
 
 Full suite pass: all recording, voice, database, and delivery tests pass with no regressions.
 
+### Edge Case Identified During Testing
+
+When the idle timeout fires and there is no recording future in `_recording_futures` (because the recording callback completed synchronously, or recording was never started), the code previously called `fail_session()` (which marks the session as FAILED). This broke two tests (`test_idle_timeout_ends_session`, `test_idle_timeout_not_recording_does_not_stop`) which expected `end_session()` instead.
+
+Fixed in follow-up commit: when `audio_count is None` (no recording future), call `end_session()` to terminate the session normally. The `fail_session()` path is reserved for when the future exists but the callback reported zero audio files (the callback itself can call `fail_session()` when it detects silence).
+
 ### Explanation of Zero-Byte Saved Files
 
 The zero-byte files observed in production (`docker exec -it scribes-transcriber ls -al /data/recordin...`) are explained by these bugs acting in combination:
