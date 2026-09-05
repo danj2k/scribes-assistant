@@ -65,46 +65,88 @@ async def on_voice_state_update(
 
 
 async def _idle_timeout(bot, guild, voice_client):
-    """Wait for idle timeout, then end session and disconnect."""
     try:
         await asyncio.sleep(bot.config.idle_timeout)
-        
+
         # Session is still active — end it
         db = bot.db
         guild_id = str(guild.id)
         active = db.get_active_session(guild_id)
-        
+
         if active:
             session_id = active["id"]
-            
-            # Stop recording
+
+            # Stop recording — triggers the recording callback
             if voice_client.is_recording():
                 voice_client.stop_recording()
-            
+
+            # Await the recording future so WAV files finish writing
+            # before we disconnect and end the session.  Mirrors the
+            # same pattern used in /stop (commands.py) to avoid the
+            # race between the recording callback writing files and
+            # end_session() queuing the session for transcription.
+            recording_future = getattr(bot, "_recording_futures", {}).pop(guild.id, None)
+            audio_count = None
+            if recording_future is not None:
+                try:
+                    audio_count = await asyncio.wait_for(
+                        asyncio.shield(recording_future), timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    bot.logger.warning(
+                        f"Session {session_id}: recording callback timed out "
+                        f"after 30s during idle timeout, proceeding with "
+                        "whatever files were registered"
+                    )
+                except Exception as e:
+                    bot.logger.error(
+                        f"Session {session_id}: recording callback failed "
+                        f"during idle timeout: {e}"
+                    )
+
             # Disconnect
             if voice_client.is_connected():
                 await voice_client.disconnect()
-            
-            # Mark as queued
-            db.end_session(session_id)
-            
+
+            # If the callback detected zero audio files (nobody spoke),
+            # mark as failed so the session doesn't block future recordings.
+            if not audio_count:
+                if audio_count is None:
+                    # Callback never fired — ensure session is marked failed
+                    # so it doesn't linger as ACTIVE.
+                    db.fail_session(session_id)
+                else:
+                    # Zero audio files; callback already called fail_session()
+                    pass
+
+                bot.logger.info(
+                    f"Session {session_id}: idle timeout with no audio "
+                    f"(count={audio_count}), marked as failed"
+                )
+            else:
+                # Mark as queued for transcription
+                db.end_session(session_id)
+                bot.logger.info(
+                    f"Session {session_id} auto-ended after idle timeout"
+                )
+
             # Notify the channel
             channel = guild.get_channel(int(active["discord_channel_id"]))
             if channel:
-                await channel.send(
+                msg = (
                     f"Session `{session_id}` ended automatically "
-                    f"(bot was idle for {bot.config.idle_timeout}s). "
-                    f"Queued for transcription."
+                    f"(bot was idle for {bot.config.idle_timeout}s)."
                 )
-            
-            bot.logger.info(
-                f"Session {session_id} auto-ended after idle timeout"
-            )
+                if not audio_count:
+                    msg += " Nobody spoke — no transcript will be generated."
+                else:
+                    msg += " Queued for transcription."
+                await channel.send(msg)
         else:
             # No active session, just disconnect
             if voice_client.is_connected():
                 await voice_client.disconnect()
-        
+
     except asyncio.CancelledError:
         pass
     finally:
