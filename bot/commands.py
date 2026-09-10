@@ -626,11 +626,17 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                 # Still try to save whatever audio was captured
             db = bot.db
 
-            # PR #3159's AudioReader._stop() calls sink.cleanup() after the
-            # callback — this calls audio_data.cleanup() + format_audio()
-            # for each AudioData, finalising WAV headers and seeking the
-            # temp file to 0.  We must NOT call cleanup() again here —
-            # AudioData.cleanup() raises if already finished.
+            # PR #3159's AudioReader._stop() calls sink.cleanup() AFTER the
+            # callback returns.  cleanup() calls AudioData.cleanup()
+            # (seek to 0 + set finished) and then WaveSink.format_audio()
+            # (wrap raw PCM in a WAV header).  Since we run BEFORE
+            # cleanup(), audio_data.file is still a raw-PCM temp file
+            # with its pointer at EOF — reading now returns b''.
+            # We call format_audio() ourselves to seek to 0 and wrap
+            # the PCM in a proper WAV header before saving.
+            # AudioData.cleanup() cannot be called here (it raises if
+            # self.finished), but format_audio() is safe to call
+            # multiple times (it just creates a new BytesIO).
             # Resolve guild for member lookup — needed to map user IDs
             # to display names. The transcriber has no Discord API access,
             # so the bot must store speaker identity in the DB now.
@@ -682,11 +688,18 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                     )
                     continue
                 try:
-                    # Write the WAV-formatted BytesIO data to the final
-                    # path.  The audio_data.file is a BytesIO (replaced
-                    # by WaveSink.format_audio() during cleanup) with a
-                    # proper WAV header — this is what soundfile needs.
+                    # Write the WAV-formatted audio to the final path.
+                    # We call sink.format_audio() below to wrap raw PCM
+                    # in proper WAV headers — the temp file on disk
+                    # only contains raw PCM, so renaming it to .wav
+                    # would produce a file soundfile/libsoundfile rejects
+                    # with "Format not recognised."
                     audio_data = sink.audio_data[user_obj]
+                    # format_audio() wraps raw PCM in a WAV header,
+                    # seeks to 0, and replaces audio_data.file with the
+                    # resulting BytesIO.  Without this, the temp file
+                    # pointer is at EOF and read() returns b''.
+                    sink.format_audio(audio_data)
                     wav_bytes = audio_data.file.read()
                     await asyncio.to_thread(
                         _write_wav_file, filepath, wav_bytes, temp_path

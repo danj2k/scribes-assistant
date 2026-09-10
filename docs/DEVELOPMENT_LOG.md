@@ -1592,4 +1592,18 @@ The zero-byte files observed in production (`docker exec -it scribes-transcriber
 
 4. **Tertiary cause — crash recovery gap:** If the bot crashed hard (OOM kill, segfault), running sessions were left in RECORDING status permanently. No transcript was produced and no error was surfaced to the user.
 
-The combination of bug 1 (idle timeout) and bug 2 (exception swallowing) was the most common production failure mode: a session would start, users would speak for a while, then someone would leave or the channel would go quiet — the idle timeout would fire, the callback would fire (consuming the exception or with incomplete data), `end_session()` would queue it, and the transcriber would process zero files. The `import wave` fix alone was insufficient because the actual failure happened before `format_audio()` was even called.|
+The combination of bug 1 (idle timeout) and bug 2 (exception swallowing) was the most common production failure mode: a session would start, users would speak for a while, then someone would leave or the channel would go quiet — the idle timeout would fire, the callback would fire (consuming the exception or with incomplete data), `end_session()` would queue it, and the transcriber would process zero files. The `import wave` fix alone was insufficient because the actual failure happened before `format_audio()` was even called.
+
+## 2026-09-10 — Fix: DAVE callback runs before cleanup, leaving file pointer at EOF
+
+After py-cord PR #3159 added DAVE voice reception, zero-byte WAV files still appeared intermittently despite the `import wave` fix. The root cause was a callback timing issue in `AudioReader._stop()`:
+
+**Root cause:** `AudioReader._stop()` (PR #3159) calls the after-callback FIRST, then calls `sink.cleanup()`. The callback reads `audio_data.file.read()` at line 690, but the temp file pointer is at EOF — all PCM data was appended by `write()` and the position was never reset. So `read()` returns `b''`. `sink.cleanup()` (which seeks to 0, wraps PCM in a WAV header, and replaces the file with a BytesIO) runs only after the callback returns — too late.
+
+**Fix:** In `_process_recording`, call `sink.format_audio(audio_data)` before `audio_data.file.read()`. `format_audio()` seeks the temp file to 0, reads all PCM data, wraps it in a proper WAV header (1-channel, 16-bit, 48 kHz), and replaces `audio_data.file` with a `BytesIO` at position 0. The subsequent `read()` returns the complete WAV-formatted bytes.
+
+**Changes:**
+- `bot/commands.py`: Added `sink.format_audio(audio_data)` before `read()`, updated misleading comment about cleanup ordering
+- `tests/test_recording_callback.py`: Made `FakeAudioData.__init__` leave the file pointer at EOF (matching real-world behaviour after `write()`), and made `FakeSink.format_audio()` actually seek to 0 — tests now exercise the same EOF condition as production
+
+**This is the definitive fix for all zero-byte WAV cases.** The data was always on disk — the file pointer was just in the wrong position.|

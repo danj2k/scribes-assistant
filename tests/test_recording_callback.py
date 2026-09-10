@@ -92,10 +92,11 @@ class FakeAudioData:
     """Mimics py-cord's audio data container, backed by a temp file on disk."""
 
     def __init__(self, data: bytes):
-        self.file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        self.file = tempfile.NamedTemporaryFile(delete=False, suffix=".pcm")
         self.file.write(data)
         self.file.flush()
-        self.file.seek(0)
+        # Leave pointer at EOF to match real DAVE behaviour —
+        # write() appends PCM without seeking back to 0.
 
     def cleanup(self):
         self.file.seek(0)
@@ -111,7 +112,17 @@ class FakeSink:
             self._temp_paths[user] = ad.file.name
 
     def format_audio(self, audio_data):
-        pass  # no-op — real WaveSink writes WAV header here
+        """Seek to 0, matching real TimestampedWaveSink.format_audio.
+
+        On PR #3159 the temp file pointer is at EOF when the callback
+        runs — without this seek, read() returns b'' and produces a
+        0-byte WAV file.  The real format_audio() also wraps raw PCM
+        in a WAV header, but for tests the incoming data already
+        carries a RIFF header so seek(0) is sufficient.
+
+        This is safe to call multiple times (harmless on BytesIO).
+        """
+        audio_data.file.seek(0)
 
 
 class FakeMember:
