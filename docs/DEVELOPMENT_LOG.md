@@ -1606,4 +1606,48 @@ After py-cord PR #3159 added DAVE voice reception, zero-byte WAV files still app
 - `bot/commands.py`: Added `sink.format_audio(audio_data)` before `read()`, updated misleading comment about cleanup ordering
 - `tests/test_recording_callback.py`: Made `FakeAudioData.__init__` leave the file pointer at EOF (matching real-world behaviour after `write()`), and made `FakeSink.format_audio()` actually seek to 0 — tests now exercise the same EOF condition as production
 
-**This is the definitive fix for all zero-byte WAV cases.** The data was always on disk — the file pointer was just in the wrong position.|
+**This is the definitive fix for all zero-byte WAV cases.** The data was always on disk — the file pointer was just in the wrong position.
+
+## 2026-09-16 — Fix: 0-byte WAV files (format_audio reads wrong source)
+
+### Problem
+
+Despite the 2026-09-10 fix (calling `sink.format_audio(audio_data)` before `read()`), zero-byte WAV files persisted in production. The transcriber failed with `Format not recognised` errors from soundfile/libsndfile.
+
+### Root Cause
+
+The 2026-09-10 fix was based on a wrong assumption. It assumed `format_audio()` would seek and read from the temp file on disk, but:
+
+1. `TimestampedWaveSink.write()` overrides the base class and writes raw PCM to temp files on disk via `self._temp_paths[user]`
+2. It does NOT call `super().write()` — so `audio_data.file` (the in-memory BytesIO) is never written to
+3. `format_audio()` is inherited from py-cord's base `WaveSink` and reads from `audio_data.file`
+4. Since `audio_data.file` was never written to, `format_audio()` wraps an empty BytesIO in a WAV header, producing either 0-byte files or files with only a WAV header and no audio data
+
+The data was always on disk in the temp files — but `format_audio()` was looking in the wrong place (the in-memory BytesIO instead of the disk temp file).
+
+### Fix
+
+Modified `bot/commands.py` to:
+1. Read raw PCM data directly from the temp file on disk (where `TimestampedWaveSink` actually writes it)
+2. Check for empty temp files and skip them with a warning
+3. Construct proper WAV headers using Python's `wave` module (48kHz, stereo, 16-bit — Discord's format)
+4. Write the complete WAV file (header + PCM data) to the final path
+5. Updated `_write_wav_file()` to accept raw PCM data and audio parameters instead of pre-formatted WAV bytes
+
+### Files Changed
+
+- `bot/commands.py` — Fixed `_write_wav_file()` and `_process_recording()` to read from temp files on disk and construct proper WAV headers
+- `docs/ARCHITECTURE.md` — Updated recording flow documentation to reflect the new WAV construction process
+- `docs/DEVELOPMENT_LOG.md` — this entry
+
+### Tests
+
+Existing tests pass. The fix ensures that:
+- Raw PCM data is read from the temp files on disk (where `TimestampedWaveSink` actually writes it)
+- Empty temp files are detected and skipped with a warning log
+- Proper WAV headers are constructed with correct audio parameters (48kHz, stereo, 16-bit)
+- The final WAV files contain both the header and the audio data, making them parseable by soundfile/libsndfile
+
+### Why the 2026-09-10 Fix Failed
+
+The 2026-09-10 fix correctly identified that the file pointer was at EOF, but incorrectly assumed that `format_audio()` would seek and read from the temp file on disk. In reality, `format_audio()` operates on `audio_data.file` (in-memory BytesIO), which is separate from the temp files on disk. The fix should have read from the temp files on disk directly, which is what this 2026-09-16 fix does.

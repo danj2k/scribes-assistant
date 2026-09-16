@@ -559,21 +559,38 @@ def _sanitize_filename(name: str) -> str:
     return result or "unknown"
 
 
-def _write_wav_file(filepath: str, wav_bytes: bytes, temp_path: str) -> None:
+def _write_wav_file(filepath: str, pcm_data: bytes, temp_path: str,
+                    sample_rate: int = 48000, channels: int = 2,
+                    sample_width: int = 2) -> None:
     """Write WAV data to the final path and remove the raw-PCM temp file.
 
     Args:
         filepath: Final output path (with proper WAV header).
-        wav_bytes: BytesIO content from WaveSink.format_audio() —
-            contains a proper WAV header followed by PCM frames.
+        pcm_data: Raw PCM bytes (no header) read from the temp file.
         temp_path: Temporary file with raw PCM (no header) — deleted
             after the WAV file is written.
+        sample_rate: Audio sample rate in Hz (default 48000 for Discord).
+        channels: Number of audio channels (default 2 for stereo).
+        sample_width: Bytes per sample (default 2 for 16-bit).
 
     This runs in a thread pool (``asyncio.to_thread``) so disk I/O
     does not block the event loop on large files.
     """
+    import wave
+    import io
+
+    # Construct a proper WAV file in memory
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_data)
+
+    # Write the WAV data to disk
     with open(filepath, "wb") as f:
-        f.write(wav_bytes)
+        f.write(wav_buffer.getvalue())
+
     # Remove the raw-PCM temp file — no longer needed.
     try:
         os.unlink(temp_path)
@@ -688,21 +705,30 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                     )
                     continue
                 try:
-                    # Write the WAV-formatted audio to the final path.
-                    # We call sink.format_audio() below to wrap raw PCM
-                    # in proper WAV headers — the temp file on disk
-                    # only contains raw PCM, so renaming it to .wav
-                    # would produce a file soundfile/libsoundfile rejects
-                    # with "Format not recognised."
-                    audio_data = sink.audio_data[user_obj]
-                    # format_audio() wraps raw PCM in a WAV header,
-                    # seeks to 0, and replaces audio_data.file with the
-                    # resulting BytesIO.  Without this, the temp file
-                    # pointer is at EOF and read() returns b''.
-                    sink.format_audio(audio_data)
-                    wav_bytes = audio_data.file.read()
+                    # Read raw PCM data from the temp file on disk.
+                    # TimestampedWaveSink writes PCM directly to temp files
+                    # (not to audio_data.file), so we must read from disk
+                    # rather than calling sink.format_audio() which would
+                    # read from an empty in-memory BytesIO.
+                    with open(temp_path, "rb") as f:
+                        pcm_data = f.read()
+
+                    if len(pcm_data) == 0:
+                        bot.logger.warning(
+                            f"Session {session_id}: temp file {temp_path} is empty "
+                            f"for {user_obj}, skipping"
+                        )
+                        try:
+                            os.unlink(temp_path)
+                        except OSError:
+                            pass
+                        continue
+
+                    # Write WAV-formatted audio to the final path with
+                    # proper WAV header (48kHz, stereo, 16-bit — Discord's format)
                     await asyncio.to_thread(
-                        _write_wav_file, filepath, wav_bytes, temp_path
+                        _write_wav_file, filepath, pcm_data, temp_path,
+                        sample_rate=48000, channels=2, sample_width=2
                     )
                     audio_count += 1
                     # Update the size in speaker_info now that we know it
