@@ -161,6 +161,15 @@ def run_worker(config_path: str | None = None):
         except Exception as e:
             logger.warning("Could not load lexicon, hotwords and correction disabled: %s", e)
 
+    # Write an initial heartbeat BEFORE model loading so the container
+    # reports healthy immediately. Model loading can take several minutes,
+    # and without this early heartbeat, the health check would see no file
+    # and declare unhealthy during the startup window (even with the
+    # start_period grace). The heartbeat is updated again after each poll
+    # cycle to confirm the worker is alive.
+    _heartbeat_file = Path("/data/transcriber.heartbeat")
+    _heartbeat_file.write_text(str(time.time()))
+
     # Download model if not present
     download_model(config.model_path, model_size=config.model_size)
 

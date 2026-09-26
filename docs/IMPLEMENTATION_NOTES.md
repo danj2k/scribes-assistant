@@ -243,10 +243,11 @@ This catches three failure modes that a trivial `import discord` check would mis
 
 ### Transcriber Health Check (Heartbeat)
 
-The transcriber's Docker health check follows the same heartbeat pattern as the bot. The transcriber writes a heartbeat file (`/data/transcriber.heartbeat`) at two points:
+The transcriber's Docker health check follows the same heartbeat pattern as the bot. The transcriber writes a heartbeat file (`/data/transcriber.heartbeat`) at three points:
 
-1. **After model load** — an initial heartbeat written before the polling loop starts, confirming the model loaded successfully and the process is ready to work.
-2. **After each poll cycle** — updated at the end of each iteration of the main loop (after the try/except block, before the loop repeats), confirming the process is actively polling.
+1. **Before model load** — an initial heartbeat written immediately after config/lexicon setup, before the (potentially slow) model download and load begins. This ensures the container reports healthy during startup even if model loading takes several minutes.
+2. **After model load** — a second heartbeat written after the model is loaded, confirming the model loaded successfully and the process is ready to work.
+3. **After each poll cycle** — updated at the end of each iteration of the main loop (after the try/except block, before the loop repeats), confirming the process is actively polling.
 
 `transcriber/healthcheck.py` reads the file's modification time and declares unhealthy if older than 300 seconds (5 minutes). This threshold is larger than the bot's (90s) because a single transcription can take several minutes for long recordings — the transcriber doesn't update the heartbeat during transcription, only between poll cycles. 5 minutes gives enough headroom for a long file while still catching a genuinely stuck or crashed process.
 
