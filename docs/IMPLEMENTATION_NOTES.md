@@ -24,14 +24,14 @@ The result: Whisper timestamps from different speakers' WAV files are not compar
 - **Initial offset** — on each user's first packet, pads their file with silence for the elapsed wall-clock time since recording start. The recording start is captured via `time.monotonic()` in `bot/commands.py` right before `start_recording()` is called, and passed to `TimestampedWaveSink` as the `recording_start` parameter. This means every user's WAV file shares the same session-level zero point, rather than being anchored to whichever user happened to send the first audio packet. This prevents timeline shifts when DAVE MLS handshakes complete at different times for different users. Uses `time.monotonic()` because RTP timestamps are per-SSRC and not comparable across users.
 - **DTX gaps** — on subsequent packets, if the RTP timestamp delta exceeds one frame, pads silence for the gap. The RTP timestamp marks the start of each packet's audio, so a gap of N frames means N-1 frames of silence between the end of the previous PCM and the start of the current one. Uses unsigned 32-bit subtraction for wraparound safety. Gaps exceeding 60 seconds are treated as SSRC resets and not padded.
 
-Opus frame constants: 48 kHz, 2 channels, 16-bit samples, 960 samples per frame (20 ms), 3840 bytes per frame. These are fixed by the Opus codec standard and Discord's voice transport.
+Opus frame constants: 48 kHz, 1 channel (mono), 16-bit samples, 960 samples per frame (20 ms), 1920 bytes per frame. These are fixed by the Opus codec standard and Discord's voice transport.
 
 ### Audio Format Handling
 
-py-cord decodes Opus to WAV internally before passing audio data to the receive callback, delivering audio at Discord's native rate (48kHz stereo). The transcriber reads these WAV files with `soundfile.read()`, which returns a numpy float32 array. No external conversion step is needed:
+py-cord's Opus decoder outputs stereo PCM (2 channels) even though Discord sends mono audio per user. `TimestampedWaveSink._pcm_to_mono()` extracts the left channel by taking every other sample, producing clean mono PCM. The WAV header is written as mono (1 channel, 48kHz, 16-bit) by both `TimestampedWaveSink.format_audio()` and the `_write_wav_file()` call in `bot/commands.py`. The transcriber reads these mono WAV files with `soundfile.read()`, which returns a numpy float32 array. No external conversion step is needed:
 
 - **Resampling** — the transcriber passes the original sample rate (48kHz) to `stream.accept_waveform(sample_rate, audio)`. sherpa-onnx resamples internally.
-- **Stereo to mono** — done in Python with `audio.mean(axis=1)`.
+- **Mono input** — the audio is already mono when it reaches the transcriber, so no stereo-to-mono downmix is needed.
 
 No ffmpeg or external audio conversion tool is used anywhere in the pipeline. Both sherpa-onnx (bundles libonnxruntime and libasound in its pip wheel) and soundfile (bundles libsndfile in `_soundfile_data/`) are self-contained — no system audio libraries are installed in the container.
 

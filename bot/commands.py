@@ -725,10 +725,11 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
                         continue
 
                     # Write WAV-formatted audio to the final path with
-                    # proper WAV header (48kHz, stereo, 16-bit — Discord's format)
+                    # proper WAV header (48kHz, mono, 16-bit — TimestampedWaveSink
+                    # downmixes stereo Discord audio to mono via _pcm_to_mono())
                     await asyncio.to_thread(
                         _write_wav_file, filepath, pcm_data, temp_path,
-                        sample_rate=48000, channels=2, sample_width=2
+                        sample_rate=48000, channels=1, sample_width=2
                     )
                     audio_count += 1
                     # Update the size in speaker_info now that we know it

@@ -18,6 +18,8 @@
 
 - **WAV header missing on disk (fixed)**: py-cord's `WaveSink.format_audio()` produces WAV-formatted BytesIO in `audio_data.file` but the on-disk temp file (`sink._temp_paths[user]`) contains only raw PCM. The `_process_recording` after-callback was renaming the raw-PCM temp file to `.wav`, producing files that soundfile/libsoundfile rejected with "Format not recognised". Fixed in `bot/commands.py` by reading the WAV-formatted data from `audio_data.file` and writing it to the final path via `_write_wav_file()` (with `asyncio.to_thread()` for large files), then deleting the raw PCM temp file.
 
+- **WAV channel mismatch (fixed)**: `_write_wav_file()` in `bot/commands.py` was writing WAV headers with `channels=2` (stereo) even though `TimestampedWaveSink.format_audio()` and `_pcm_to_mono()` produce mono audio (1 channel). This caused playback issues: mono audio data interpreted as stereo would play at 2× speed and one octave higher (the player treats mono samples as interleaved L/R pairs, halving the effective sample rate from 48kHz to 24kHz). Fixed by changing `_write_wav_file()` to use `channels=1` to match the actual mono audio data.
+
 - **Whole-file audio read (fixed)**: `transcribe()` previously loaded the entire WAV file into memory via `sf.read(audio_path, dtype="float32")`. A 3-hour stereo 48 kHz recording allocates ~4 GB of RAM. Replaced with block-based reading using `sf.SoundFile` context manager — `seek()` + `read(frames=chunk_samples)` pulls one 28-second chunk at a time, downmixed to mono inline. Peak memory drops from ~4 GB to ~5 MB.
 
 ## Future Considerations
