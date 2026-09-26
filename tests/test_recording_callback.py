@@ -89,7 +89,12 @@ class FakeUser:
 
 
 class FakeAudioData:
-    """Mimics py-cord's audio data container, backed by a temp file on disk."""
+    """Mimics py-cord's audio data container, backed by a temp file on disk.
+
+    The real TimestampedWaveSink writes raw PCM (no WAV header) to temp files.
+    The callback reads these temp files and passes the raw PCM to
+    _write_wav_file, which constructs proper WAV headers.
+    """
 
     def __init__(self, data: bytes):
         self.file = tempfile.NamedTemporaryFile(delete=False, suffix=".pcm")
@@ -112,16 +117,7 @@ class FakeSink:
             self._temp_paths[user] = ad.file.name
 
     def format_audio(self, audio_data):
-        """Seek to 0, matching real TimestampedWaveSink.format_audio.
-
-        On PR #3159 the temp file pointer is at EOF when the callback
-        runs — without this seek, read() returns b'' and produces a
-        0-byte WAV file.  The real format_audio() also wraps raw PCM
-        in a WAV header, but for tests the incoming data already
-        carries a RIFF header so seek(0) is sufficient.
-
-        This is safe to call multiple times (harmless on BytesIO).
-        """
+        """Seek to 0, matching real TimestampedWaveSink.format_audio."""
         audio_data.file.seek(0)
 
 
@@ -165,6 +161,7 @@ class FakeLogger:
     def info(self, msg): pass
     def error(self, msg): pass
     def warning(self, msg): pass
+    def exception(self, msg, *args): pass
 
 
 class FakeBot:
@@ -181,20 +178,37 @@ class FakeBot:
 
 @pytest.fixture
 def mock_file_io(monkeypatch):
-    """Mock disk I/O so no real filesystem access happens.
+    """Mock disk I/O so no real filesystem access happens for the final output.
 
-    The new code path writes WAV-formatted BytesIO data to the final
-    path via _write_wav_file (in a thread pool via asyncio.to_thread),
-    then removes the raw-PCM temp file.  This fixture intercepts those
-    calls so tests can verify content without touching /data.
+    The new code path reads raw PCM from temp files on disk, then calls
+    _write_wav_file (in a thread pool via asyncio.to_thread) to construct
+    WAV headers and write to the final path. This fixture intercepts
+    _write_wav_file so tests can verify content without touching /data.
+
+    The temp files are real (created by FakeAudioData) and the callback
+    reads from them, so we let os.path.exists and open() work normally
+    for temp paths. We only mock the final output directory creation
+    and the _write_wav_file function.
     """
-    written_files: dict[str, bytes | str] = {}
+    written_files: dict[str, bytes] = {}
 
     def mock_makedirs(path, exist_ok=False):
-        pass  # no-op — don't touch real filesystem
+        pass  # no-op — don't touch real filesystem for /data/recordings
 
-    def mock_write_wav(filepath, wav_bytes, temp_path):
-        written_files[filepath] = wav_bytes
+    def mock_write_wav(filepath, pcm_data, temp_path,
+                       sample_rate=48000, channels=2, sample_width=2):
+        """Capture the WAV output that _write_wav_file would produce.
+
+        We construct the actual WAV bytes (matching the real function's
+        behaviour) so tests can verify headers and content.
+        """
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(sample_width)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(pcm_data)
+        written_files[filepath] = wav_buffer.getvalue()
         # Clean up the temp file as the real function does
         try:
             os.unlink(temp_path)
@@ -238,8 +252,10 @@ class TestMakeRecordingAfterCallback:
     async def test_callback_processes_audio_and_registers_in_db(self, mock_file_io):
         """When invoked, the callback writes WAV files and registers them in DB."""
         db = FakeDB()
-        audio_data_1 = FakeAudioData(b"RIFF\x24\x00\x00\x00WAVEfmt ...")
-        audio_data_2 = FakeAudioData(b"RIFF\x24\x00\x00\x00WAVEfmt ...")
+        # Raw PCM data (no WAV header) — matches what TimestampedWaveSink writes
+        raw_pcm = b"\x00\x01" * 480  # 960 bytes = 480 mono 16-bit samples
+        audio_data_1 = FakeAudioData(raw_pcm)
+        audio_data_2 = FakeAudioData(raw_pcm)
         user1 = FakeUser(111)
         user2 = FakeUser(222)
         sink = FakeSink({
@@ -256,9 +272,6 @@ class TestMakeRecordingAfterCallback:
         # PR #3159 calls after(sink, *args) — sink is the first positional arg
         after_cb(sink)
         await asyncio.wait_for(future, timeout=5.0)
-
-        print("\nDB audio_files:", db.audio_files)
-        print("mock_file_io keys:", list(mock_file_io.keys()))
 
         paths = [f["filepath"] for f in db.audio_files]
         assert any("111" in p for p in paths)
@@ -277,7 +290,8 @@ class TestMakeRecordingAfterCallback:
         guild = FakeGuild({111: member})
         bot = FakeBot(db, guild=guild)
 
-        sink = FakeSink({user: FakeAudioData(b"audio data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({user: FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -294,7 +308,8 @@ class TestMakeRecordingAfterCallback:
         guild = FakeGuild({})  # No members
         bot = FakeBot(db, guild=guild)
 
-        sink = FakeSink({FakeUser(999): FakeAudioData(b"audio data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({FakeUser(999): FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -309,7 +324,8 @@ class TestMakeRecordingAfterCallback:
         """The future must resolve after processing completes."""
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({FakeUser(111): FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -325,10 +341,11 @@ class TestMakeRecordingAfterCallback:
         """The future must resolve even if processing throws an exception."""
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({FakeUser(111): FakeAudioData(raw_pcm)})
 
         # Force an error by making os.makedirs raise
-        with patch("os.makedirs", side_effect=OSError("disk full")):
+        with patch.object(_bc_commands.os, "makedirs", side_effect=OSError("disk full")):
             after_cb, future = make_recording_after_callback(
                 bot, "test-session", "123", "456", sink,
             )
@@ -386,10 +403,10 @@ class TestMakeRecordingAfterCallback:
 
     async def test_writes_wav_files_to_disk(self, mock_file_io):
         """Audio data should be written as .wav files to the recording directory."""
-        audio_bytes = b"RIFF\x24\x00\x00\x00WAVEfmt ...data"
+        raw_pcm = b"\x00\x01" * 480  # 960 bytes of raw PCM
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({FakeUser(42): FakeAudioData(audio_bytes)})
+        sink = FakeSink({FakeUser(42): FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -400,14 +417,18 @@ class TestMakeRecordingAfterCallback:
         # File content should be captured by mock_file_io
         wav_paths = [p for p in mock_file_io if p.endswith("42.wav")]
         assert len(wav_paths) == 1
-        assert mock_file_io[wav_paths[0]] == audio_bytes
+        # The written bytes should be valid WAV (with RIFF header)
+        written = mock_file_io[wav_paths[0]]
+        assert written[:4] == b"RIFF"
+        assert written[8:12] == b"WAVE"
 
     async def test_guild_id_converted_to_int_for_lookup(self, mock_file_io):
         """guild_id is passed as a string; get_guild should receive an int."""
         db = FakeDB()
         guild = FakeGuild({111: FakeMember("TestUser")})
         bot = FakeBot(db, guild=guild)
-        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({FakeUser(111): FakeAudioData(raw_pcm)})
 
         received_guild_ids = []
         original_get_guild = bot.get_guild
@@ -431,8 +452,9 @@ class TestMakeRecordingAfterCallback:
         db1, db2 = FakeDB(), FakeDB()
         bot1 = FakeBot(db1)
         bot2 = FakeBot(db2)
-        sink1 = FakeSink({FakeUser(1): FakeAudioData(b"a")})
-        sink2 = FakeSink({FakeUser(2): FakeAudioData(b"b")})
+        raw_pcm = b"\x00\x01" * 480
+        sink1 = FakeSink({FakeUser(1): FakeAudioData(raw_pcm)})
+        sink2 = FakeSink({FakeUser(2): FakeAudioData(raw_pcm)})
 
         after1, future1 = make_recording_after_callback(
             bot1, "session-1", "100", "200", sink1,
@@ -456,10 +478,11 @@ class TestMakeRecordingAfterCallback:
         """The future result is the number of audio files saved."""
         db = FakeDB()
         bot = FakeBot(db)
+        raw_pcm = b"\x00\x01" * 480
         sink = FakeSink({
-            FakeUser(1): FakeAudioData(b"a"),
-            FakeUser(2): FakeAudioData(b"b"),
-            FakeUser(3): FakeAudioData(b"c"),
+            FakeUser(1): FakeAudioData(raw_pcm),
+            FakeUser(2): FakeAudioData(raw_pcm),
+            FakeUser(3): FakeAudioData(raw_pcm),
         })
 
         after_cb, future = make_recording_after_callback(
@@ -476,7 +499,8 @@ class TestMakeRecordingAfterCallback:
         """WAV-formatted bytes are written to the final path."""
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({FakeUser(111): FakeAudioData(b"data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({FakeUser(111): FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -497,7 +521,8 @@ class TestMakeRecordingAfterCallback:
         guild = FakeGuild({111: FakeMember("Duckinell/DM")})
         bot = FakeBot(db, guild=guild)
 
-        sink = FakeSink({user: FakeAudioData(b"audio data")})
+        raw_pcm = b"\x00\x01" * 480
+        sink = FakeSink({user: FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -515,16 +540,16 @@ class TestMakeRecordingAfterCallback:
     async def test_output_wav_is_valid(self, mock_file_io):
         """Written WAV files must be valid WAV with correct headers and audio data.
 
-        Regression test for the zero-byte output bug caused by
-        format_audio() not writing back the WAV BytesIO to
-        audio_data.file. Without that assignment, audio_data.file
-        still pointed at the raw-PCM temp file at EOF, producing
-        zero-byte files on disk.
+        Regression test for the channel mismatch bug: the callback now
+        writes mono (1-channel) WAV files to match TimestampedWaveSink's
+        downmixed output. Previously it wrote a stereo header over mono
+        data, causing 2x speed/pitch and 'Format not recognised' errors.
         """
         from io import BytesIO
 
-        # Build a genuine 1-second mono 16-bit 48kHz WAV file
-        # with a 440 Hz sine wave.
+        # Build genuine raw PCM data (mono, 16-bit, 48kHz) — 1 second
+        # of a 440 Hz sine wave. This is what TimestampedWaveSink writes
+        # to temp files after downmixing stereo Discord audio to mono.
         sample_rate = 48000
         duration_samples = sample_rate  # 1 second
         raw_pcm = struct.pack(
@@ -533,22 +558,9 @@ class TestMakeRecordingAfterCallback:
               for i in range(duration_samples)),
         )
 
-        buf = BytesIO()
-        with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(raw_pcm)
-        wav_bytes = buf.getvalue()
-
-        # Sanity check our fixture is valid
-        assert len(wav_bytes) > 44, "WAV header + data must exceed header-only"
-        assert wav_bytes[:4] == b"RIFF"
-        assert wav_bytes[8:12] == b"WAVE"
-
         db = FakeDB()
         bot = FakeBot(db)
-        sink = FakeSink({FakeUser(42): FakeAudioData(wav_bytes)})
+        sink = FakeSink({FakeUser(42): FakeAudioData(raw_pcm)})
 
         after_cb, future = make_recording_after_callback(
             bot, "test-session", "123", "456", sink,
@@ -574,7 +586,9 @@ class TestMakeRecordingAfterCallback:
 
         # 3. Can be parsed by Python's wave module
         with wave.open(BytesIO(written_bytes), "rb") as wf:
-            assert wf.getnchannels() == 1
+            assert wf.getnchannels() == 1, (
+                f"Expected mono (1 channel) but got {wf.getnchannels()}"
+            )
             assert wf.getsampwidth() == 2
             assert wf.getframerate() == sample_rate
             assert wf.getnframes() == duration_samples
