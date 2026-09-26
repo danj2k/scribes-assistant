@@ -659,6 +659,24 @@ def make_recording_after_callback(bot, session_id, guild_id, channel_id, sink):
             # so the bot must store speaker identity in the DB now.
             guild = bot.get_guild(int(guild_id)) if hasattr(bot, "get_guild") else None
 
+            # Flush all user temp files before reading them.
+            # TimestampedWaveSink writes PCM to buffered NamedTemporaryFile
+            # objects. The writes sit in userspace buffers until flushed.
+            # We read from those same files via NEW handles (below), which
+            # cannot see unflushed bytes. Without this flush, the tail end
+            # of every recording is silently truncated — whatever was still
+            # in the writer's buffer when /stop fires is lost.
+            # This is cheap: frames are already small and periodic, so the
+            # buffers are mostly full anyway.
+            for user_obj, audio_data in sink.audio_data.items():
+                try:
+                    audio_data.file.flush()
+                except Exception as e:
+                    bot.logger.warning(
+                        f"Session {session_id}: failed to flush temp file for "
+                        f"{user_obj}: {e}"
+                    )
+
             rec_dir = f"/data/recordings/{session_id}"
 
             # Build the list of files to rename. Speaker name resolution

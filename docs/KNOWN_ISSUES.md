@@ -20,6 +20,8 @@
 
 - **WAV channel mismatch (fixed)**: `_write_wav_file()` in `bot/commands.py` was writing WAV headers with `channels=2` (stereo) even though `TimestampedWaveSink.format_audio()` and `_pcm_to_mono()` produce mono audio (1 channel). This caused playback issues: mono audio data interpreted as stereo would play at 2× speed and one octave higher (the player treats mono samples as interleaved L/R pairs, halving the effective sample rate from 48kHz to 24kHz). Fixed by changing `_write_wav_file()` to use `channels=1` to match the actual mono audio data.
 
+- **Unflushed writes → silently truncated audio (fixed)**: `TimestampedWaveSink.write()` writes PCM to buffered `NamedTemporaryFile` objects. The writes sit in userspace buffers until flushed. When recording stops, `_process_recording()` reads those same temp files via NEW file handles (`open(temp_path, "rb")`), which cannot see unflushed bytes. Any data still in the writer's buffer at the moment `/stop` fires is silently dropped — the tail end of every recording is truncated. Fixed by flushing all user temp files at the start of `_process_recording()` before reading them. The flush is cheap because frames are already small and periodic.
+
 - **Whole-file audio read (fixed)**: `transcribe()` previously loaded the entire WAV file into memory via `sf.read(audio_path, dtype="float32")`. A 3-hour stereo 48 kHz recording allocates ~4 GB of RAM. Replaced with block-based reading using `sf.SoundFile` context manager — `seek()` + `read(frames=chunk_samples)` pulls one 28-second chunk at a time, downmixed to mono inline. Peak memory drops from ~4 GB to ~5 MB.
 
 ## Future Considerations
