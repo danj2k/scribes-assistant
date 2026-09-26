@@ -68,6 +68,75 @@ if not getattr(_VoiceClient, "_start_recording_patched", False):
     _VoiceClient.start_recording = _patched_start_recording
     _VoiceClient._start_recording_patched = True
 
+# --- Voice receive diagnostics ---
+# The recorder has historically had failures where one Discord user's audio
+# is healthy while another user's audio is corrupted.  The failure can occur
+# inside py-cord before ``Sink.write()`` is called, so logging only at the
+# sink is insufficient.  These wrappers deliberately log metadata only —
+# never encrypted packets or raw audio — and leave py-cord behaviour alone.
+#
+# The patch is guarded so it remains harmless if py-cord moves or renames
+# these internals.  DEBUG logging gives per-packet detail; warnings/errors
+# are emitted for actual decoder/DAVE failures.
+
+def _install_voice_receive_diagnostics() -> None:
+    """Add lightweight diagnostics around py-cord's DAVE/Opus receive path."""
+    try:
+        from discord.opus import PacketDecoder as _PacketDecoder
+    except (ImportError, AttributeError):
+        logger.warning("Voice diagnostics unavailable: PacketDecoder not found")
+        return
+
+    if getattr(_PacketDecoder, "_scribes_diagnostics_patched", False):
+        return
+
+    voice_logger = logging.getLogger("scribes.voice.diagnostics")
+
+    # Helper to extract packet metadata for logging
+    def _packet_meta(self, packet):
+        if packet is None:
+            return "None"
+        return f"ssrc={getattr(packet, 'ssrc', '?')} seq={getattr(packet, 'sequence', '?')} ts={getattr(packet, 'timestamp', '?')}"
+
+    # Wrap _decode_packet to log decode attempts and failures
+    def _patched_decode_packet(self, data):
+        voice_logger.debug(
+            "RX decode attempt: %s user_id=%s",
+            _packet_meta(self, data),
+            getattr(self, "_cached_id", None),
+        )
+        try:
+            result = _PacketDecoder._original_decode_packet(self, data)
+        except Exception as exc:
+            voice_logger.error(
+                "RX decode FAILED: %s user_id=%s error=%s dave_status=%s",
+                _packet_meta(self, data),
+                getattr(self, "_cached_id", None),
+                exc,
+                getattr(self, "_dave_status", None) if hasattr(self, "_dave_status") else None,
+            )
+            raise
+
+        decoded_packet, pcm = result
+        voice_logger.debug(
+            "RX decode succeeded: %s user_id=%s pcm_bytes=%s",
+            _packet_meta(self, decoded_packet),
+            getattr(self, "_cached_id", None),
+            len(pcm) if pcm else 0,
+        )
+        return result
+
+    # Store original and install wrapper
+    _PacketDecoder._original_decode_packet = _PacketDecoder._decode_packet
+    _PacketDecoder._decode_packet = _patched_decode_packet
+    _PacketDecoder._scribes_diagnostics_patched = True
+
+    voice_logger.info(
+        "Installed py-cord voice receive diagnostics (PacketDecoder DAVE/Opus path)"
+    )
+
+_install_voice_receive_diagnostics()
+
 from shared.config import Config
 from shared.database import Database
 from shared.lexicon import Lexicon

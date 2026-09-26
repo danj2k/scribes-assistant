@@ -97,6 +97,12 @@ class TimestampedWaveSink(WaveSink):
         # but this guard makes the subclass self-contained.
         self._lock = threading.Lock()
 
+        # Per-(user, SSRC) diagnostic counters for tracking packet flow
+        # and detecting suspicious PCM patterns (e.g., decoder garbage).
+        self._diagnostic_packet_count: dict = {}
+        self._diagnostic_zero_pcm_count: dict = {}
+        self._diagnostic_high_variance_count: dict = {}
+
     @Filters.container
     def write(self, data, user):
         """Write audio data, inserting silence padding for temporal alignment.
@@ -183,6 +189,7 @@ class TimestampedWaveSink(WaveSink):
                 self._last_rtp_ts[user] = rtp_ts
 
             self.audio_data[user].write(pcm)
+            self._log_receive_diagnostics(data, user, pcm, rtp_ts)
 
     def _pcm_to_mono(self, pcm: bytes) -> bytes:
         """Downmix stereo PCM to mono.
@@ -201,6 +208,84 @@ class TimestampedWaveSink(WaveSink):
             return pcm
         arr = array.array("h", pcm)
         return array.array("h", arr[0::2]).tobytes()
+
+    def _log_receive_diagnostics(self, data, user, pcm: bytes, rtp_ts) -> None:
+        """Record/log safe receive metadata for diagnosing per-user corruption.
+
+        The py-cord DAVE/Opus decoder can fail before this sink is called, so
+        bot/main.py also instruments PacketDecoder. This sink-side telemetry
+        tells us what actually reached the recorder and whether a particular
+        SSRC/user is producing suspicious PCM.
+        """
+        packet = getattr(data, "packet", None)
+        if packet is None:
+            return
+
+        ssrc = getattr(packet, "ssrc", None)
+        sequence = getattr(packet, "sequence", None)
+        user_id = getattr(user, "id", None)
+        key = (user_id, ssrc)
+        now = time.monotonic()
+
+        # Track packet count per (user, SSRC)
+        count = self._diagnostic_packet_count.get(key, 0) + 1
+        self._diagnostic_packet_count[key] = count
+
+        # Detect suspicious PCM patterns
+        pcm_len = len(pcm)
+        if pcm_len == 0:
+            zero_count = self._diagnostic_zero_pcm_count.get(key, 0) + 1
+            self._diagnostic_zero_pcm_count[key] = zero_count
+            if zero_count == 1 or zero_count % 100 == 0:
+                logger.warning(
+                    "RX zero PCM: user_id=%s ssrc=%s seq=%s count=%d",
+                    user_id, ssrc, sequence, zero_count,
+                )
+            return
+
+        # Check for all-zero PCM (silence or decoder failure)
+        if pcm == b"\x00" * pcm_len:
+            zero_count = self._diagnostic_zero_pcm_count.get(key, 0) + 1
+            self._diagnostic_zero_pcm_count[key] = zero_count
+            if zero_count == 1 or zero_count % 100 == 0:
+                logger.warning(
+                    "RX all-zero PCM: user_id=%s ssrc=%s seq=%s bytes=%d count=%d",
+                    user_id, ssrc, sequence, pcm_len, zero_count,
+                )
+            return
+
+        # Check for high-variance noise (random decoder garbage)
+        # Sample a subset to avoid expensive full-array computation
+        if pcm_len >= 1000:
+            sample_size = min(1000, pcm_len)
+            sample = array.array("h", pcm[:sample_size * 2])
+            # Compute variance proxy: sum of absolute differences
+            variance_proxy = sum(abs(sample[i] - sample[i-1]) for i in range(1, len(sample)))
+            # High variance proxy suggests random noise (typical of decoder failure)
+            # Normal speech has variance_proxy < 50000 for 1000 samples
+            if variance_proxy > 100000:
+                high_var_count = self._diagnostic_high_variance_count.get(key, 0) + 1
+                self._diagnostic_high_variance_count[key] = high_var_count
+                if high_var_count == 1 or high_var_count % 50 == 0:
+                    logger.warning(
+                        "RX high-variance PCM (possible decoder garbage): "
+                        "user_id=%s ssrc=%s seq=%s variance_proxy=%d count=%d",
+                        user_id, ssrc, sequence, variance_proxy, high_var_count,
+                    )
+
+        # Log first packet and periodic summaries
+        if count == 1:
+            logger.info(
+                "RX first packet: user_id=%s ssrc=%s seq=%s ts=%s pcm_bytes=%d",
+                user_id, ssrc, sequence, rtp_ts, pcm_len,
+            )
+        elif count % 500 == 0:
+            logger.debug(
+                "RX packet summary: user_id=%s ssrc=%s count=%d zero_count=%d high_var_count=%d",
+                user_id, ssrc, count,
+                self._diagnostic_zero_pcm_count.get(key, 0),
+                self._diagnostic_high_variance_count.get(key, 0),
+            )
 
     def format_audio(self, audio_data):
         """Override to write a mono WAV header.

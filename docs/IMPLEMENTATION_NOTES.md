@@ -142,6 +142,32 @@ The custom `TimestampedWaveSink` (subclass of py-cord's `WaveSink`) overrides `w
 
 py-cord's `AudioData` still stores its `BytesIO` buffer at `.file` in the base class, but `TimestampedWaveSink.write()` bypasses this by writing PCM directly to a temp file path tracked in `_temp_paths`. PR #3159's `AudioReader._stop()` calls `sink.cleanup()` (including `audio_data.cleanup()` + `format_audio()`) **after** the after-callback, so the callback must not call `cleanup()` itself — `AudioData.cleanup()` raises `SinkException("already finished writing")` if called twice.
 
+### Voice Receive Diagnostics — Two-Layer Instrumentation
+
+Some Discord users' audio arrives as random noise (high-variance PCM) while others are healthy. The failure can occur inside py-cord before `Sink.write()` is called, so logging only at the sink is insufficient. Two-layer diagnostic instrumentation was added to capture the full receive path:
+
+**Layer 1: PacketDecoder wrapper (bot/main.py)**
+
+`_install_voice_receive_diagnostics()` wraps `discord.opus.PacketDecoder._decode_packet` at module import time. The wrapper:
+- Logs every decode attempt at DEBUG level (SSRC, sequence, timestamp, user_id)
+- Logs failures at ERROR level with the exception message and DAVE session status (`_dave_status` attribute if present)
+- Logs successes at DEBUG level with PCM byte count
+- Is guarded with `hasattr()` checks and a `_scribes_diagnostics_patched` flag so it's a no-op if py-cord moves or renames these internals
+- Logs metadata only — never encrypted packets or raw audio
+
+**Layer 2: Sink-side telemetry (bot/timestamped_sink.py)**
+
+`TimestampedWaveSink._log_receive_diagnostics()` is called from `write()` after PCM extraction. It tracks per-(user, SSRC) counters:
+- `_diagnostic_packet_count`: total packets received
+- `_diagnostic_zero_pcm_count`: packets with all-zero PCM (silence or decoder failure)
+- `_diagnostic_high_variance_count`: packets with high-variance PCM (random decoder garbage)
+
+The high-variance check samples the first 1000 samples (2000 bytes) and computes a variance proxy (sum of absolute differences between consecutive samples). Normal speech has variance_proxy < 50000 for 1000 samples; random decoder garbage typically exceeds 100000. This threshold was calibrated from production recordings where healthy users had autocorrelation ~0.96 and corrupted users had autocorrelation ~0.01.
+
+Logging is rate-limited: first occurrence and every 50th/100th occurrence to avoid log spam. Periodic summaries (every 500 packets) are logged at DEBUG level.
+
+**Why two layers:** The PacketDecoder wrapper catches failures before they reach the sink (e.g., DAVE handshake failures, Opus decoder errors). The sink-side telemetry catches suspicious PCM patterns that made it through the decoder but are still garbage. Together they provide end-to-end visibility into the receive path without modifying py-cord behaviour.
+
 ### libopus Docker Dependency
 
 py-cord decodes incoming Opus audio to PCM via `ctypes` at runtime, loading `libopus.so.0`. The `python:3.11-slim` base image does not include this library, so the Dockerfile installs `libopus0` via `apt-get`. Without it, `opus.Decoder()` raises `OpusNotLoaded` at the first incoming audio packet, which kills the recording session.
