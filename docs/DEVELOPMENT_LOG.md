@@ -1,5 +1,27 @@
 # Scribe's Assistant — Development Log
 
+## 2026-09-26 — Fix: transcriber health check reports unhealthy during startup
+
+The transcriber container was reporting "unhealthy" immediately after
+starting, even though it was functioning correctly. The root cause: the
+transcriber wrote its initial heartbeat file **after** model loading, but
+model loading can take several minutes. With `start_period: 120s` in
+docker-compose.yml, the health check would see no heartbeat file and
+declare the container unhealthy during the startup window.
+
+**Fix:** Write an initial heartbeat file immediately after config/lexicon
+setup, before the (potentially slow) model download and load begins. This
+ensures the container reports healthy during the entire startup window,
+regardless of how long model loading takes.
+
+The heartbeat is now written at three points:
+1. Before model load (new) — ensures healthy status during startup
+2. After model load (existing) — confirms model loaded successfully
+3. After each poll cycle (existing) — confirms worker is actively polling
+
+Updated `docs/IMPLEMENTATION_NOTES.md` to document all three heartbeat
+write points.
+
 ## 2026-07-16 — Fix: streaming audio read + recording retention purge
 
 Two related improvements to storage and memory: block-based audio reading
