@@ -92,6 +92,13 @@ def _install_voice_receive_diagnostics() -> None:
 
     voice_logger = logging.getLogger("scribes.voice.diagnostics")
 
+    # Rate-limit error logging to prevent log flooding (e.g., 80k AEAD failures)
+    # Track last error time and count per error type
+    _error_counts: dict = {}
+    _error_last_log: dict = {}
+    _ERROR_LOG_INTERVAL = 10.0  # Log at most once per 10 seconds per error type
+    _STALE_KEY_THRESHOLD = 100  # After 100 failures, suspect stale keys
+
     # Helper to extract packet metadata for logging
     def _packet_meta(self, packet):
         if packet is None:
@@ -108,13 +115,35 @@ def _install_voice_receive_diagnostics() -> None:
         try:
             result = _PacketDecoder._original_decode_packet(self, data)
         except Exception as exc:
-            voice_logger.error(
-                "RX decode FAILED: %s user_id=%s error=%s dave_status=%s",
-                _packet_meta(self, data),
-                getattr(self, "_cached_id", None),
-                exc,
-                getattr(self, "_dave_status", None) if hasattr(self, "_dave_status") else None,
-            )
+            # Rate-limit error logging
+            error_key = str(exc)
+            now = time.monotonic()
+            count = _error_counts.get(error_key, 0) + 1
+            _error_counts[error_key] = count
+            
+            last_log = _error_last_log.get(error_key, 0)
+            should_log = (now - last_log) >= _ERROR_LOG_INTERVAL
+            
+            if should_log:
+                _error_last_log[error_key] = now
+                voice_logger.error(
+                    "RX decode FAILED: %s user_id=%s error=%s dave_status=%s (count=%d)",
+                    _packet_meta(self, data),
+                    getattr(self, "_cached_id", None),
+                    exc,
+                    getattr(self, "_dave_status", None) if hasattr(self, "_dave_status") else None,
+                    count,
+                )
+                
+                # Detect stale keys after reconnection
+                if count == _STALE_KEY_THRESHOLD:
+                    voice_logger.error(
+                        "STALE KEYS DETECTED: %d decode failures for '%s'. "
+                        "Voice connection likely reconnected without refreshing DAVE/MLS keys. "
+                        "Recording will be incomplete until voice client is restarted.",
+                        count, error_key
+                    )
+            
             raise
 
         decoded_packet, pcm = result

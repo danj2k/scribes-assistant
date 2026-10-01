@@ -83,8 +83,11 @@ class TimestampedWaveSink(WaveSink):
             self._recording_start = None
 
         # Per-user state, keyed by the user/member/object passed to write().
-        # _last_rtp_ts: RTP timestamp of the previous packet (for DTX gap detection).
-        self._last_rtp_ts: dict = {}
+        # Wall-clock based padding: track samples written vs time since recording start.
+        # This replaces the old RTP-delta approach which broke when users reconnected
+        # with new SSRCs (RTP timestamp base would jump, making deltas meaningless).
+        self._samples_written: dict = {}  # user -> total samples written to file
+        self._first_packet_time: dict = {}  # user -> monotonic time of first packet
 
         # Maps user -> temporary file path for the raw PCM data written
         # during this recording session. Files are renamed to their final
@@ -107,24 +110,29 @@ class TimestampedWaveSink(WaveSink):
     def write(self, data, user):
         """Write audio data, inserting silence padding for temporal alignment.
 
-        On each user's first packet, pads the beginning of their file
-        with silence for the elapsed time since recording start. On
-        subsequent packets, pads silence for any DTX gap detected via
-        the RTP timestamp delta.
+        Uses wall-clock arrival time to determine padding, not RTP timestamps.
+        RTP timestamps are unreliable: they reset when a user reconnects with a
+        new SSRC, and the old code keyed _last_rtp_ts by user (not SSRC), so a
+        reconnect caused a meaningless delta that either skipped padding or
+        inserted huge silence blocks.
+
+        Wall-clock approach: on each packet, compute how many samples *should*
+        have been written by now (based on elapsed time since recording start),
+        compare to how many *were* written, and pad the difference with silence.
+        This correctly handles reconnects, DTX gaps, and late joiners.
         """
         from discord.voice.packets import VoiceData
 
         if isinstance(data, VoiceData):
             pcm = self._pcm_to_mono(data.pcm)
-            rtp_ts = getattr(data.packet, "timestamp", None)
         else:
             pcm = data
-            rtp_ts = None
 
         if not pcm:
             return
 
         now = time.monotonic()
+        samples_in_packet = len(pcm) // _SAMPLE_WIDTH
 
         with self._lock:
             # Set the shared zero point on the very first packet from any
@@ -135,61 +143,41 @@ class TimestampedWaveSink(WaveSink):
                 self._recording_start = now
 
             # Create the AudioData entry on first packet for this user.
-            # Use a disk-backed temp file instead of an in-memory BytesIO
-            # to avoid buffering hours of PCM data in RAM.
             if user not in self.audio_data:
                 tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
                 self._temp_paths[user] = tmp.name
                 self.audio_data[user] = AudioData(file=tmp)
+                self._samples_written[user] = 0
+                self._first_packet_time[user] = now
 
                 # Pad initial silence so this user's file starts at the
                 # recording's zero point, not at their first speech.
-                # Without this, a user who joins late or waits before
-                # speaking would have their timestamps offset.
                 initial_offset = now - self._recording_start
                 if initial_offset > 0.005:  # ignore sub-5ms jitter
-                    silence_bytes = int(
-                        initial_offset
-                        * _SAMPLE_RATE
-                        * _CHANNELS
-                        * _SAMPLE_WIDTH
-                    )
+                    silence_samples = int(initial_offset * _SAMPLE_RATE)
+                    silence_bytes = silence_samples * _SAMPLE_WIDTH
                     self.audio_data[user].write(b"\x00" * silence_bytes)
+                    self._samples_written[user] += silence_samples
             else:
-                # DTX gap detection: if the RTP timestamp jumped by
-                # more than one frame, Discord did not send packets
-                # during that period (the user was silent). Pad with
-                # silence to keep this user's timeline aligned with
-                # real time. Without this, a user who listens a lot
-                # would have their timestamps compressed relative to
-                # a user who talks continuously.
-                if rtp_ts is not None:
-                    last_ts = self._last_rtp_ts.get(user)
-                    if last_ts is not None:
-                        # Unsigned 32-bit subtraction handles wraparound.
-                        gap = (rtp_ts - last_ts) & 0xFFFFFFFF
-                        if _SAMPLES_PER_FRAME < gap < _MAX_PLAUSIBLE_GAP:
-                            gap_frames = gap // _SAMPLES_PER_FRAME
-                            # Subtract 1 frame: the RTP timestamp marks
-                            # the start of each packet, so a gap of N
-                            # frames means N-1 frames of silence between
-                            # the end of the previous packet's PCM and
-                            # the start of the current one.
-                            silence_frames = gap_frames - 1
-                            silence_bytes = silence_frames * _BYTES_PER_FRAME
-                            if silence_bytes > 0:
-                                self.audio_data[user].write(b"\x00" * silence_bytes)
+                # Wall-clock padding: compare expected samples vs actual.
+                # This handles DTX gaps, reconnects, and late joiners uniformly.
+                elapsed = now - self._recording_start
+                expected_samples = int(elapsed * _SAMPLE_RATE)
+                actual_samples = self._samples_written.get(user, 0)
+                deficit = expected_samples - actual_samples
 
-            # Always record the last RTP timestamp for this user,
-            # regardless of whether this was their first or subsequent
-            # packet.  Without this on the first packet, the next
-            # packet's DTX gap check finds last_ts=None and skips
-            # padding — defeating the entire gap detection logic.
-            if rtp_ts is not None:
-                self._last_rtp_ts[user] = rtp_ts
+                # Only pad if we're behind by more than one frame (20ms).
+                # Small deficits are normal jitter; padding them would
+                # insert audible clicks.  Cap at 5 seconds to avoid inserting
+                # huge silence blocks if the clock jumps or the system hiccups.
+                if _SAMPLES_PER_FRAME < deficit < _SAMPLE_RATE * 5:
+                    silence_bytes = deficit * _SAMPLE_WIDTH
+                    self.audio_data[user].write(b"\x00" * silence_bytes)
+                    self._samples_written[user] += deficit
 
             self.audio_data[user].write(pcm)
-            self._log_receive_diagnostics(data, user, pcm, rtp_ts)
+            self._samples_written[user] = self._samples_written.get(user, 0) + samples_in_packet
+            self._log_receive_diagnostics(data, user, pcm)
 
     def _pcm_to_mono(self, pcm: bytes) -> bytes:
         """Downmix stereo PCM to mono.
@@ -209,7 +197,7 @@ class TimestampedWaveSink(WaveSink):
         arr = array.array("h", pcm)
         return array.array("h", arr[0::2]).tobytes()
 
-    def _log_receive_diagnostics(self, data, user, pcm: bytes, rtp_ts) -> None:
+    def _log_receive_diagnostics(self, data, user, pcm: bytes) -> None:
         """Record/log safe receive metadata for diagnosing per-user corruption.
 
         The py-cord DAVE/Opus decoder can fail before this sink is called, so
@@ -276,8 +264,8 @@ class TimestampedWaveSink(WaveSink):
         # Log first packet and periodic summaries
         if count == 1:
             logger.info(
-                "RX first packet: user_id=%s ssrc=%s seq=%s ts=%s pcm_bytes=%d",
-                user_id, ssrc, sequence, rtp_ts, pcm_len,
+                "RX first packet: user_id=%s ssrc=%s seq=%s pcm_bytes=%d",
+                user_id, ssrc, sequence, pcm_len,
             )
         elif count % 500 == 0:
             logger.debug(
