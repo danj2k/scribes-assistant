@@ -71,6 +71,12 @@ def _build_interleaved_transcript(db: Database, session_id: str) -> str:
     if segments:
         lines = []
         for seg in segments:
+            # Safety net: skip any [BLANK_AUDIO] segments that slipped through
+            # the worker's RMS-based silence filter. These are silence chunks
+            # that Whisper hallucinated text for, or chunks below the RMS
+            # threshold that still got transcribed.
+            if seg["text"].strip() == "[BLANK_AUDIO]":
+                continue
             ts = _format_timestamp(seg["start_time"])
             speaker = seg.get("speaker_name") or seg.get("discord_user_id") or "Unknown"
             lines.append(f"[{ts}] {speaker}: {seg['text']}")

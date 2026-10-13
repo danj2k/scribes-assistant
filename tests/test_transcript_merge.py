@@ -108,6 +108,18 @@ class TestBuildInterleavedTranscript:
         result = _build_interleaved_transcript(db, "s1")
         assert "[00:00:01] Unknown: Hello" in result
 
+    def test_blank_audio_segments_filtered(self, db):
+        """Segments with [BLANK_AUDIO] text are excluded from transcript."""
+        db.create_session("s1", "g", "c")
+        db.add_audio_file("s1", "/tmp/a.wav", discord_user_id="123", speaker_name="Alice")
+        db.add_transcript_segment("s1", file_id=1, start_time=0.0, text="Hello world", seq=0)
+        db.add_transcript_segment("s1", file_id=1, start_time=28.0, text="[BLANK_AUDIO]", seq=1)
+        db.add_transcript_segment("s1", file_id=1, start_time=56.0, text="How are you?", seq=2)
+        result = _build_interleaved_transcript(db, "s1")
+        assert "[BLANK_AUDIO]" not in result
+        assert "Hello world" in result
+        assert "How are you?" in result
+
 
 class TestBuildSegments:
     """Tests for TranscriptionWorker._build_segments.
