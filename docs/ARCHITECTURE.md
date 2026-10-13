@@ -56,6 +56,15 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 - soundfile (audio file I/O — reads WAV files into numpy arrays; bundles its own libsndfile)
 - SQLite3 (queue and lexicon access)
 
+**Audio splitting:** The transcriber uses silence-aware splitting instead of fixed-size chunking:
+
+1. `transcriber/silence.py` runs ffmpeg's `silencedetect` filter on each audio file to find regions of silence (default: > 0.8s below -40 dB).
+2. `transcriber/splitter.py` splits the audio at the midpoint of each silence region, producing natural speech-boundary segments.
+3. Each segment is capped at 25 seconds (Whisper's limit is 30s) — if no silence is found within a 25s window, a forced split is inserted.
+4. Segments that are pure silence (RMS < -60 dB) or produce only `[BLANK_AUDIO]` text are filtered out before storage.
+
+This eliminates the mid-sentence cuts and out-of-order transcript lines that occurred with the previous blind 28-second chunking approach.
+
 **Dockerfile:** `transcriber/Dockerfile` — Python 3.11 base with sherpa-onnx and soundfile. Both libraries ship self-contained pip wheels (sherpa-onnx bundles libonnxruntime and libasound; soundfile bundles libsndfile), so no system audio libraries are installed. The config file is bind-mounted at runtime (not baked into the image).
 
 **Graceful shutdown:** The transcriber registers a SIGTERM handler (Docker sends SIGTERM on `docker stop`). The handler sets a module-level flag that the main loop checks between operations; the loop exits cleanly after the current transcription finishes, then closes the database. This avoids SIGKILL after the Docker grace period, which would lose in-progress work. SIGINT (Ctrl-C) is still handled via `KeyboardInterrupt`.
