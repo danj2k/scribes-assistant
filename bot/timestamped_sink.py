@@ -170,10 +170,12 @@ class TimestampedWaveSink(WaveSink):
                 # Small deficits are normal jitter; padding them would
                 # insert audible clicks.  Cap at 5 seconds to avoid inserting
                 # huge silence blocks if the clock jumps or the system hiccups.
-                if _SAMPLES_PER_FRAME < deficit < _SAMPLE_RATE * 5:
-                    silence_bytes = deficit * _SAMPLE_WIDTH
+                if deficit > _SAMPLES_PER_FRAME:
+                    # Cap the deficit at 5 seconds to prevent huge silence blocks
+                    capped_deficit = min(deficit, _SAMPLE_RATE * 5)
+                    silence_bytes = capped_deficit * _SAMPLE_WIDTH
                     self.audio_data[user].write(b"\x00" * silence_bytes)
-                    self._samples_written[user] += deficit
+                    self._samples_written[user] += capped_deficit
 
             self.audio_data[user].write(pcm)
             self._samples_written[user] = self._samples_written.get(user, 0) + samples_in_packet

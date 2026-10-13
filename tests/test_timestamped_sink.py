@@ -1,4 +1,4 @@
-"""Tests for bot/timestamped_sink.py — silence padding for temporal alignment.
+"""Tests for bot/timestamped_sink.py — wall-clock-based temporal alignment.
 
 TimestampedWaveSink must produce per-user WAV files where:
   1. Every user's file starts at the recording's zero point (initial delay
@@ -6,14 +6,15 @@ TimestampedWaveSink must produce per-user WAV files where:
   2. DTX gaps (silence periods) are padded so each user's timeline matches
      real time.
 
-These tests exercise the silence-padding logic by calling write() with
-mocked VoiceData packets and inspecting the bytes written to each user's
-AudioData buffer.
+These tests exercise the wall-clock-based padding logic by calling write()
+with mocked VoiceData packets and inspecting the bytes written to each user's
+temporary file.
 """
 
 from __future__ import annotations
 
 import io
+import tempfile
 import time
 from unittest.mock import MagicMock, patch
 
@@ -22,7 +23,6 @@ import pytest
 from bot.timestamped_sink import (
     TimestampedWaveSink,
     _BYTES_PER_FRAME,
-    _MAX_PLAUSIBLE_GAP,
     _SAMPLES_PER_FRAME,
     _SAMPLE_RATE,
     _CHANNELS,
@@ -35,10 +35,11 @@ from bot.timestamped_sink import (
 # ---------------------------------------------------------------------------
 
 
-def _make_voice_data(pcm: bytes, rtp_ts: int | None = None) -> MagicMock:
-    """Build a mock VoiceData with .pcm and .packet.timestamp attributes.
+def _make_voice_data(pcm: bytes) -> MagicMock:
+    """Build a mock VoiceData with .pcm attribute.
 
     Sets __class__ to VoiceData so isinstance() in write() passes.
+    The PCM should be stereo (interleaved L/R) as produced by the Opus decoder.
     """
     from discord.voice.packets import VoiceData
 
@@ -46,8 +47,24 @@ def _make_voice_data(pcm: bytes, rtp_ts: int | None = None) -> MagicMock:
     data.pcm = pcm
     data.__class__ = VoiceData
     data.packet = MagicMock()
-    data.packet.timestamp = rtp_ts
+    data.packet.ssrc = 12345
+    data.packet.sequence = 1
     return data
+
+
+def _make_stereo_pcm(mono_samples: int, value: int = 1) -> bytes:
+    """Generate stereo PCM (interleaved L/R) for testing.
+
+    The Opus decoder produces stereo output even for mono streams.
+    Each sample is 16-bit signed.
+    """
+    import array
+    # Create stereo: L, R, L, R, ... where L=value, R=0
+    samples = []
+    for _ in range(mono_samples):
+        samples.append(value)  # Left channel
+        samples.append(0)      # Right channel (silence)
+    return array.array("h", samples).tobytes()
 
 
 def _make_sink() -> TimestampedWaveSink:
@@ -58,11 +75,7 @@ def _make_sink() -> TimestampedWaveSink:
 
 
 def _get_user_audio(sink: TimestampedWaveSink, user) -> bytes:
-    """Extract written bytes for a user from the sink's audio_data.
-
-    The sink now writes to temp files (not BytesIO), so we use seek+read
-    instead of MemoryIO-specific getvalue().
-    """
+    """Extract written bytes for a user from the sink's temp file."""
     f = sink.audio_data[user].file
     pos = f.tell()
     f.seek(0)
@@ -100,14 +113,14 @@ class TestConstants:
 
 
 # ---------------------------------------------------------------------------
-# Initial delay padding
+# Initial delay padding (wall-clock based)
 # ---------------------------------------------------------------------------
 
 
 class TestInitialDelayPadding:
     """First packet from a user should pad silence for the delay between
     recording start (first packet from any user) and this user's first
-    packet."""
+    packet, using wall-clock time."""
 
     def test_first_user_no_initial_padding(self):
         """The very first user to speak defines the recording start.
@@ -116,13 +129,22 @@ class TestInitialDelayPadding:
         """
         sink = _make_sink()
         user = MagicMock(name="user_a")
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        # Stereo PCM: 960 mono samples, downmixed to 960 mono samples
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+        t0 = 100.0
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
+            sink.write(_make_voice_data(pcm), user)
 
         written = _get_user_audio(sink, user)
-        # No initial padding: written data is exactly the PCM payload.
-        assert written == pcm
+        # After downmix: 960 samples * 2 bytes = 1920 bytes
+        expected_mono = _SAMPLES_PER_FRAME * _SAMPLE_WIDTH
+        assert len(written) == expected_mono
+        # No initial padding: written data is exactly the downmixed PCM payload.
+        # The left channel (value=1) becomes the mono output.
+        import array
+        expected_pcm = array.array("h", [1] * _SAMPLES_PER_FRAME).tobytes()
+        assert written == expected_pcm
 
     def test_late_joiner_gets_silence_padding(self):
         """A user who speaks 2 seconds after recording start should have
@@ -135,44 +157,45 @@ class TestInitialDelayPadding:
         sink = _make_sink()
         user_a = MagicMock(name="user_a")
         user_b = MagicMock(name="user_b")
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
         # Use fixed monotonic times so the padding is deterministic.
         # t0 = first packet, t1 = t0 + 2.0s (second user's first packet).
         t0 = 100.0
         with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user_a)
+            sink.write(_make_voice_data(pcm), user_a)
 
         with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 2.0):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user_b)
+            sink.write(_make_voice_data(pcm), user_b)
 
         written_b = _get_user_audio(sink, user_b)
-        # Expected silence: 2.0 s * 48000 Hz * 2 ch * 2 bytes = 384 000 bytes
+        # Expected silence: 2.0 s * 48000 Hz * 1 ch * 2 bytes = 192 000 bytes
         expected_silence = int(2.0 * _SAMPLE_RATE * _CHANNELS * _SAMPLE_WIDTH)
-        assert len(written_b) == expected_silence + len(pcm)
+        # After downmix, PCM is mono: 960 samples * 2 bytes = 1920 bytes
+        assert len(written_b) == expected_silence + _BYTES_PER_FRAME
         # First part is silence (all zeros).
         assert written_b[:expected_silence] == b"\x00" * expected_silence
-        # Last part is the actual PCM.
-        assert written_b[expected_silence:] == pcm
+        # Last part is the actual PCM (downmixed to mono).
+        assert len(written_b[expected_silence:]) == _BYTES_PER_FRAME
 
     def test_sub_5ms_offset_no_padding(self):
         """Offsets below 5 ms are treated as jitter — no silence padded."""
         sink = _make_sink()
         user_a = MagicMock(name="user_a")
         user_b = MagicMock(name="user_b")
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
         t0 = 100.0
         with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user_a)
+            sink.write(_make_voice_data(pcm), user_a)
 
         # 3 ms delay — below the 5 ms threshold.
         with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 0.003):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user_b)
+            sink.write(_make_voice_data(pcm), user_b)
 
         written_b = _get_user_audio(sink, user_b)
-        # No padding: data is just the PCM.
-        assert written_b == pcm
+        # No padding: data is just the downmixed PCM (mono).
+        assert len(written_b) == _BYTES_PER_FRAME
 
     def test_recording_start_set_on_first_packet(self):
         """_recording_start should be set after the first packet."""
@@ -181,7 +204,7 @@ class TestInitialDelayPadding:
 
         user = MagicMock()
         with patch("bot.timestamped_sink.time.monotonic", return_value=100.0):
-            sink.write(_make_voice_data(b"\x01" * _BYTES_PER_FRAME, rtp_ts=0), user)
+            sink.write(_make_voice_data(b"\x01" * _BYTES_PER_FRAME), user)
 
         assert sink._recording_start == 100.0
 
@@ -194,12 +217,12 @@ class TestInitialDelayPadding:
         assert sink._recording_start == 42.0
 
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
         # Even with a different monotonic time at write, the explicit
         # recording_start should prevail.
         with patch("bot.timestamped_sink.time.monotonic", return_value=100.0):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+            sink.write(_make_voice_data(pcm), user)
 
         assert sink._recording_start == 42.0  # unchanged
 
@@ -209,150 +232,112 @@ class TestInitialDelayPadding:
         explicit_start = 100.0
         sink = TimestampedWaveSink(recording_start=explicit_start)
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
         # User's first packet arrives 3 seconds after recording_start.
         with patch("bot.timestamped_sink.time.monotonic", return_value=explicit_start + 3.0):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+            sink.write(_make_voice_data(pcm), user)
 
         written = _get_user_audio(sink, user)
         # Expected silence: 3.0 s of PCM silence.
         expected_silence = int(3.0 * _SAMPLE_RATE * _CHANNELS * _SAMPLE_WIDTH)
-        assert len(written) == expected_silence + len(pcm)
+        # After downmix, PCM is mono
+        assert len(written) == expected_silence + _BYTES_PER_FRAME
         assert written[:expected_silence] == b"\x00" * expected_silence
-        assert written[expected_silence:] == pcm
+        assert len(written[expected_silence:]) == _BYTES_PER_FRAME
 
 
 # ---------------------------------------------------------------------------
-# DTX gap padding
+# DTX gap padding (wall-clock based)
 # ---------------------------------------------------------------------------
 
 
 class TestDTXGapPadding:
     """Gaps between consecutive packets from the same user should be
-    padded with silence based on the RTP timestamp delta."""
+    padded with silence based on wall-clock elapsed time."""
 
     def test_no_gap_no_padding(self):
-        """Consecutive frames with no gap (delta = 1 frame) get no silence."""
+        """Consecutive frames with no time gap get no silence."""
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
-        # Second packet: RTP delta = exactly 1 frame (960 samples).
-        sink.write(_make_voice_data(pcm, rtp_ts=_SAMPLES_PER_FRAME), user)
+        t0 = 100.0
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
+            sink.write(_make_voice_data(pcm), user)
+        # Second packet: 20ms later (1 frame duration).
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 0.020):
+            sink.write(_make_voice_data(pcm), user)
 
         written = _get_user_audio(sink, user)
-        # Two frames of PCM, no silence.
-        assert written == pcm + pcm
+        # Two frames of mono PCM, no silence (deficit < 1 frame).
+        assert len(written) == 2 * _BYTES_PER_FRAME
 
     def test_dtx_gap_padded_with_silence(self):
-        """A gap of N frames should be padded with N-1 frames of silence.
+        """A gap of 100ms should be padded with silence.
 
-        If the RTP timestamp jumps by 5 frames (5 * 960 = 4800), there
-        are 4 missing frames, so 4 frames of silence should be inserted
-        before the new PCM data. The RTP timestamp marks the start of
-        each packet, so a 5-frame gap = 4 frames of silence + 1 frame
-        of current audio.
+        The wall-clock approach compares expected samples (based on elapsed
+        time) vs actual samples written, and pads the deficit.
         """
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
-        gap_frames = 5
-        sink.write(
-            _make_voice_data(pcm, rtp_ts=gap_frames * _SAMPLES_PER_FRAME),
-            user,
-        )
+        t0 = 100.0
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
+            sink.write(_make_voice_data(pcm), user)
 
-        written = _get_user_audio(sink, user)
-        silence = b"\x00" * (4 * _BYTES_PER_FRAME)
-        assert written == pcm + silence + pcm
-
-    def test_large_gap_near_max_plausible(self):
-        """A gap just under _MAX_PLAUSIBLE_GAP should still be padded."""
-        sink = _make_sink()
-        user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
-
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
-
-        gap_ts = _MAX_PLAUSIBLE_GAP - _SAMPLES_PER_FRAME
-        sink.write(_make_voice_data(pcm, rtp_ts=gap_ts), user)
+        # 100ms gap — should pad with ~100ms of silence.
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 0.120):
+            sink.write(_make_voice_data(pcm), user)
 
         written = _get_user_audio(sink, user)
-        gap_frames = gap_ts // _SAMPLES_PER_FRAME
-        silence_frames = gap_frames - 1
-        silence = b"\x00" * (silence_frames * _BYTES_PER_FRAME)
-        assert written == pcm + silence + pcm
+        # Expected: first PCM + ~100ms silence + second PCM
+        # 100ms = 0.1s * 48000 Hz * 2 bytes = 9600 bytes
+        expected_silence = int(0.1 * _SAMPLE_RATE * _SAMPLE_WIDTH)
+        # After downmix, each PCM frame is _BYTES_PER_FRAME bytes
+        assert len(written) == _BYTES_PER_FRAME + expected_silence + _BYTES_PER_FRAME
+        assert written[:_BYTES_PER_FRAME] != b"\x00" * _BYTES_PER_FRAME  # First frame is not silence
+        assert written[_BYTES_PER_FRAME:_BYTES_PER_FRAME + expected_silence] == b"\x00" * expected_silence
+        assert written[_BYTES_PER_FRAME + expected_silence:] != b"\x00" * _BYTES_PER_FRAME  # Second frame is not silence
 
-    def test_gap_exceeding_max_not_padded(self):
-        """A gap larger than _MAX_PLAUSIBLE_GAP is treated as an SSRC
-        reset and should NOT be padded."""
+    def test_small_gap_below_frame_threshold_not_padded(self):
+        """Gaps smaller than one frame (20ms) are treated as jitter."""
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+        t0 = 100.0
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
+            sink.write(_make_voice_data(pcm), user)
 
-        gap_ts = _MAX_PLAUSIBLE_GAP + _SAMPLES_PER_FRAME
-        sink.write(_make_voice_data(pcm, rtp_ts=gap_ts), user)
+        # 10ms gap — below the 20ms threshold.
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 0.030):
+            sink.write(_make_voice_data(pcm), user)
 
         written = _get_user_audio(sink, user)
-        # No silence padding — data is just the two PCM payloads.
-        assert written == pcm + pcm
+        # No silence padded — just two mono PCM payloads.
+        assert len(written) == 2 * _BYTES_PER_FRAME
 
-    def test_rtp_wraparound_handled(self):
-        """RTP timestamp is 32-bit unsigned and wraps.  The subtraction
-        should use unsigned arithmetic so a wraparound produces the
-        correct positive gap."""
+    def test_large_gap_capped_at_5_seconds(self):
+        """Gaps larger than 5 seconds are capped to avoid huge silence blocks."""
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
-        ts1 = 0xFFFFFFF0
-        sink.write(_make_voice_data(pcm, rtp_ts=ts1), user)
+        t0 = 100.0
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
+            sink.write(_make_voice_data(pcm), user)
 
-        gap_frames = 3
-        ts2 = (ts1 + gap_frames * _SAMPLES_PER_FRAME) & 0xFFFFFFFF
-        sink.write(_make_voice_data(pcm, rtp_ts=ts2), user)
+        # 10 second gap — should be capped at 5 seconds.
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 10.0):
+            sink.write(_make_voice_data(pcm), user)
 
         written = _get_user_audio(sink, user)
-        # Gap is 3 frames -> 2 frames of silence.
-        silence = b"\x00" * (2 * _BYTES_PER_FRAME)
-        assert written == pcm + silence + pcm
-
-    def test_no_rtp_timestamp_no_dtx_padding(self):
-        """When rtp_ts is None (raw bytes, not VoiceData), no DTX gap
-        detection occurs — data is written as-is."""
-        sink = _make_sink()
-        user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
-
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
-        sink.write(_make_voice_data(pcm, rtp_ts=None), user)
-
-        written = _get_user_audio(sink, user)
-        # No silence padded — just two PCM payloads.
-        assert written == pcm + pcm
-
-    def test_first_packet_rtp_ts_stored(self):
-        """The first packet's RTP timestamp must be stored so the DTX
-        check on the second packet finds a non-None last_ts.
-
-        This is a regression test for a bug where _last_rtp_ts was
-        only updated in the else branch (not the first-packet branch),
-        causing DTX detection to never fire.
-        """
-        sink = _make_sink()
-        user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
-
-        sink.write(_make_voice_data(pcm, rtp_ts=42), user)
-
-        assert user in sink._last_rtp_ts
-        assert sink._last_rtp_ts[user] == 42
+        # Expected: first PCM + 5s silence + second PCM
+        max_silence = int(5.0 * _SAMPLE_RATE * _SAMPLE_WIDTH)
+        # After downmix, each PCM frame is _BYTES_PER_FRAME bytes
+        assert len(written) == _BYTES_PER_FRAME + max_silence + _BYTES_PER_FRAME
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +352,7 @@ class TestEdgeCases:
         """Packets with empty PCM should be skipped entirely."""
         sink = _make_sink()
         user = MagicMock()
-        vd = _make_voice_data(b"", rtp_ts=0)
+        vd = _make_voice_data(b"")
 
         sink.write(vd, user)
 
@@ -375,11 +360,10 @@ class TestEdgeCases:
         assert user not in sink.audio_data
 
     def test_raw_bytes_not_voicedata(self):
-        """When data is raw bytes (not VoiceData), pcm = data and
-        rtp_ts = None.  No DTX detection occurs."""
+        """When data is raw bytes (not VoiceData), pcm = data."""
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x02" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=2)
 
         # Pass raw bytes — isinstance(data, VoiceData) is False.
         sink.write(pcm, user)
@@ -388,51 +372,51 @@ class TestEdgeCases:
         assert written == pcm
 
     def test_multiple_users_independent_tracking(self):
-        """Each user should have independent RTP timestamp tracking."""
+        """Each user should have independent sample tracking."""
         sink = _make_sink()
         user_a = MagicMock(name="a")
         user_b = MagicMock(name="b")
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
         t0 = 100.0
         # User A: two packets with no gap.
         with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
-            sink.write(_make_voice_data(pcm, rtp_ts=0), user_a)
-        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
-            sink.write(_make_voice_data(pcm, rtp_ts=_SAMPLES_PER_FRAME), user_a)
+            sink.write(_make_voice_data(pcm), user_a)
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 0.020):
+            sink.write(_make_voice_data(pcm), user_a)
 
         # User B: first packet at same time (no initial offset), then a gap.
         with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
-            sink.write(_make_voice_data(pcm, rtp_ts=1000), user_b)
-        with patch("bot.timestamped_sink.time.monotonic", return_value=t0):
-            sink.write(
-                _make_voice_data(pcm, rtp_ts=1000 + 4 * _SAMPLES_PER_FRAME),
-                user_b,
-            )
+            sink.write(_make_voice_data(pcm), user_b)
+        with patch("bot.timestamped_sink.time.monotonic", return_value=t0 + 0.100):
+            sink.write(_make_voice_data(pcm), user_b)
 
         written_a = _get_user_audio(sink, user_a)
         written_b = _get_user_audio(sink, user_b)
 
-        # User A: no gaps, no initial padding -> 2 * _BYTES_PER_FRAME.
+        # User A: no gaps, no initial padding -> 2 frames of mono PCM.
         assert len(written_a) == 2 * _BYTES_PER_FRAME
 
-        # User B: 4-frame gap -> 3 frames silence (gap_frames - 1).
-        silence = b"\x00" * (3 * _BYTES_PER_FRAME)
-        assert written_b == pcm + silence + pcm
+        # User B: 80ms gap -> ~80ms silence
+        # Allow for small floating-point precision differences
+        expected_silence = int(0.080 * _SAMPLE_RATE * _SAMPLE_WIDTH)
+        # After downmix, each PCM frame is _BYTES_PER_FRAME bytes
+        # Allow ±10 bytes for floating-point precision
+        assert abs(len(written_b) - (_BYTES_PER_FRAME + expected_silence + _BYTES_PER_FRAME)) <= 10
 
     def test_filtered_users_skips_write(self):
         """Filters.container: if filtered_users is set and user is NOT
         in it, write() should return None (no data written)."""
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
 
         # Set up filtered_users so the Filters.container decorator
         # short-circuits. The user must NOT be in this set.
         other_user = MagicMock(name="other")
         sink.filtered_users = {other_user}
 
-        sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+        sink.write(_make_voice_data(pcm), user)
 
         # The container decorator returns None when user not in filtered_users.
         assert user not in sink.audio_data
@@ -458,13 +442,13 @@ class TestThreadSafety:
 
         sink = _make_sink()
         user = MagicMock()
-        pcm = b"\x01" * _BYTES_PER_FRAME
+        pcm = _make_stereo_pcm(_SAMPLES_PER_FRAME, value=1)
         num_threads = 10
         writes_per_thread = 50
 
         def writer():
             for _ in range(writes_per_thread):
-                sink.write(_make_voice_data(pcm, rtp_ts=0), user)
+                sink.write(_make_voice_data(pcm), user)
 
         threads = [threading.Thread(target=writer) for _ in range(num_threads)]
         for t in threads:
@@ -473,8 +457,8 @@ class TestThreadSafety:
             t.join()
 
         written = _get_user_audio(sink, user)
-        # All threads wrote the same PCM with rtp_ts=0, so no DTX padding.
-        # (rtp_ts=0 every time means gap=0, which is < _SAMPLES_PER_FRAME.)
+        # All threads wrote the same PCM with no time gap, so no padding.
+        # Each write produces _BYTES_PER_FRAME bytes of mono PCM.
         expected_len = num_threads * writes_per_thread * _BYTES_PER_FRAME
         assert len(written) == expected_len
 
