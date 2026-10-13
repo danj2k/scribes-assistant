@@ -55,20 +55,24 @@ def split_at_silence(
         midpoint = (start + end) / 2.0
         split_points.append(midpoint)
 
-    # Add forced splits at max_duration intervals where no silence exists
-    forced_splits: list[float] = []
-    cursor = 0.0
-    while cursor < total_duration:
-        next_forced = cursor + max_duration
-        if next_forced < total_duration:
-            # Check if there's a natural split point within [cursor, next_forced]
-            has_natural = any(cursor < sp <= next_forced for sp in split_points)
-            if not has_natural:
-                forced_splits.append(next_forced)
-        cursor = next_forced
+    # Build the final list of split points by walking through natural splits
+    # and inserting forced splits wherever the gap exceeds max_duration.
+    all_splits: list[float] = []
+    last_split = 0.0
+    for sp in sorted(split_points):
+        if sp <= last_split:
+            continue
+        # Insert forced splits to fill any gap > max_duration
+        while sp - last_split > max_duration:
+            last_split += max_duration
+            all_splits.append(last_split)
+        all_splits.append(sp)
+        last_split = sp
 
-    # Merge and sort all split points
-    all_splits = sorted(set(split_points + forced_splits))
+    # Fill any remaining gap after the last natural split
+    while total_duration - last_split > max_duration:
+        last_split += max_duration
+        all_splits.append(last_split)
 
     # Build chunks from split points
     chunks: list[tuple[float, np.ndarray]] = []
