@@ -128,21 +128,26 @@ class TestWorkerLoadModel:
 class TestWorkerTranscribe:
     """Tests for the transcribe method."""
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_transcribe_returns_text(self, mock_sf, mock_sherpa):
+    def test_transcribe_returns_text(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """transcribe returns TranscriptionResult with text from the model."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        # Short audio (< 28s) → single chunk, one create_stream call
-        audio = np.zeros(16000, dtype="float32")  # 1 second
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [(0.0, audio)]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -156,20 +161,25 @@ class TestWorkerTranscribe:
         assert result.text == "Hello world"
         assert result.segments == []
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_transcribe_empty_audio(self, mock_sf, mock_sherpa):
+    def test_transcribe_empty_audio(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """transcribe returns empty text for silence."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.zeros(16000, dtype="float32")  # 1 second
+        audio = np.zeros(16000, dtype="float32")  # 1 second of silence
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [(0.0, audio)]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -190,20 +200,26 @@ class TestTranscribeNoNumpyToList:
     bindings accept numpy arrays via the buffer protocol natively.
     """
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_accept_waveform_receives_array_not_list(self, mock_sf, mock_sherpa):
+    def test_accept_waveform_receives_array_not_list(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """accept_waveform must receive the audio object directly, not audio.tolist()."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.zeros(16000, dtype="float32")  # 1 second
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [(0.0, audio)]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -223,20 +239,26 @@ class TestTranscribeNoNumpyToList:
             "not a converted copy"
         )
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_tolist_not_called(self, mock_sf, mock_sherpa):
+    def test_tolist_not_called(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """The audio array's .tolist() method must never be called."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.zeros(16000, dtype="float32")  # 1 second
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [(0.0, audio)]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -255,21 +277,28 @@ class TestTranscribeNoNumpyToList:
             "accept_waveform received a Python list — .tolist() was called"
         )
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_stereo_audio_passed_as_mono_array(self, mock_sf, mock_sherpa):
+    def test_stereo_audio_passed_as_mono_array(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """After stereo→mono downmix, the result should still be a numpy array."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        # Stereo audio: 1 second, 2 channels
-        stereo = np.zeros((16000, 2), dtype="float32")
+        # Stereo audio: 1 second, 2 channels - use non-silent audio
+        stereo = np.random.randn(16000, 2).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(stereo).SoundFile
+        mock_find_silence.return_value = []
+        # After downmix, it becomes mono
+        mono = stereo.mean(axis=1).astype("float32")
+        mock_split.return_value = [(0.0, mono)]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -289,27 +318,33 @@ class TestTranscribeNoNumpyToList:
 
 
 class TestAudioChunking:
-    """Tests for 28-second chunking to work around Whisper's 30-second limit.
+    """Tests for silence-aware chunking to work around Whisper's 30-second limit.
 
-    sherpa-onnx Whisper silently discards audio beyond 30 seconds.  The
-    transcriber splits audio into 28-second chunks, transcribes each
-    independently, and offsets segment timestamps by chunk start time.
+    The transcriber uses silence detection to split audio at natural pauses,
+    then transcribes each chunk independently and offsets segment timestamps
+    by chunk start time.
     """
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_short_audio_single_chunk(self, mock_sf, mock_sherpa):
+    def test_short_audio_single_chunk(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """Audio shorter than 28 seconds results in a single create_stream call."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.zeros(16000 * 10, dtype="float32")  # 10 seconds
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000 * 10).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [(0.0, audio)]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer  # Ensure worker uses our mock
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -320,20 +355,31 @@ class TestAudioChunking:
         worker.transcribe("/tmp/audio.wav")
         assert mock_recognizer.create_stream.call_count == 1
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_long_audio_multiple_chunks(self, mock_sf, mock_sherpa):
+    def test_long_audio_multiple_chunks(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """Audio longer than 28 seconds results in multiple create_stream calls."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000 * 60).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        # Split into 3 chunks: 0-25s, 25-50s, 50-60s
+        mock_split.return_value = [
+            (0.0, audio[:16000*25]),
+            (25.0, audio[16000*25:16000*50]),
+            (50.0, audio[16000*50:]),
+        ]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer  # Ensure worker uses our mock
 
         mock_stream = MagicMock()
         mock_recognizer.create_stream.return_value = mock_stream
@@ -342,24 +388,32 @@ class TestAudioChunking:
         mock_stream.result.segment_timestamps = None
 
         worker.transcribe("/tmp/audio.wav")
-        # 60s / 28s = 3 chunks (28s + 28s + 4s)
         assert mock_recognizer.create_stream.call_count == 3
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_chunk_segment_timestamps_offset(self, mock_sf, mock_sherpa):
+    def test_chunk_segment_timestamps_offset(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """Segment timestamps from later chunks are offset by chunk start time."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        # 60s of audio → 3 chunks: 0-28s, 28-56s, 56-60s
-        audio = np.zeros(16000 * 60, dtype="float32")
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000 * 60).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [
+            (0.0, audio[:16000*25]),
+            (25.0, audio[16000*25:16000*50]),
+            (50.0, audio[16000*50:]),
+        ]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer  # Ensure worker uses our mock
 
         # Return different mock results per call
         streams = []
@@ -376,26 +430,36 @@ class TestAudioChunking:
         # 3 segments, with timestamps offset by chunk start
         assert len(result.segments) == 3
         assert result.segments[0].start_time == 1.0       # 0 + 1
-        assert result.segments[1].start_time == 29.0      # 28 + 1
-        assert result.segments[2].start_time == 57.0      # 56 + 1
+        assert result.segments[1].start_time == 26.0      # 25 + 1
+        assert result.segments[2].start_time == 51.0      # 50 + 1
         assert result.segments[0].text == "Segment 0."
         assert result.segments[1].text == "Segment 1."
         assert result.segments[2].text == "Segment 2."
 
+    @patch("transcriber.worker.split_at_silence")
+    @patch("transcriber.worker.find_silence_boundaries")
     @patch("transcriber.worker.sherpa_onnx")
     @patch("transcriber.worker.sf")
-    def test_text_joined_across_chunks(self, mock_sf, mock_sherpa):
+    def test_text_joined_across_chunks(self, mock_sf, mock_sherpa, mock_find_silence, mock_split):
         """Text from all chunks is joined with spaces."""
         import numpy as np
         from transcriber.worker import TranscriptionWorker
 
-        audio = np.zeros(16000 * 60, dtype="float32")  # 60 seconds
+        # Use non-silent audio so it passes RMS threshold
+        audio = np.random.randn(16000 * 60).astype("float32") * 0.3
         mock_sf.SoundFile = _make_mock_sf(audio).SoundFile
+        mock_find_silence.return_value = []
+        mock_split.return_value = [
+            (0.0, audio[:16000*25]),
+            (25.0, audio[16000*25:16000*50]),
+            (50.0, audio[16000*50:]),
+        ]
 
         worker = TranscriptionWorker(model_path="/tmp/models")
         mock_recognizer = MagicMock()
         mock_sherpa.OfflineRecognizer.from_whisper.return_value = mock_recognizer
         worker.load_model()
+        worker.recognizer = mock_recognizer  # Ensure worker uses our mock
 
         streams = []
         texts = ["Hello world.", "How are you.", "Goodbye."]

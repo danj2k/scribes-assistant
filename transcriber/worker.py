@@ -14,6 +14,8 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 from shared.tar_utils import safe_extract_members
+from transcriber.silence import find_silence_boundaries
+from transcriber.splitter import split_at_silence
 
 # Module-level imports for testability -- tests patch these names
 try:
@@ -25,6 +27,11 @@ try:
     import soundfile as sf
 except ImportError:
     sf = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 import urllib.request
 
@@ -104,11 +111,10 @@ class TranscriptionWorker:
     def transcribe(self, audio_path: str, hotwords: Optional[str] = None) -> Optional[TranscriptionResult]:
         """Transcribe an audio file. Returns TranscriptionResult or None on error.
 
-        sherpa-onnx Whisper only processes the first 30 seconds of audio and
-        silently discards the rest.  To handle longer recordings, we split the
-        audio into 28-second chunks, transcribe each independently, and offset
-        each chunk's segment timestamps by the chunk's start time so the final
-        merged segments are chronological across the entire file.
+        Uses silence-aware chunking: detects silence boundaries in the audio
+        and splits at natural pause points instead of blind fixed-size chunks.
+        This produces correctly ordered segments and avoids transcribing
+        long stretches of silence.
 
         Args:
             audio_path: Path to the WAV file to transcribe.
@@ -119,66 +125,57 @@ class TranscriptionWorker:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
         try:
-            # Stream the audio from disk in 28-second chunks rather than
-            # reading the entire file into memory.  A 3-hour stereo WAV at
-            # 48 kHz/16-bit is ~2 GB on disk and ~4 GB as float32 in RAM;
-            # loading it whole risks OOM on a constrained server.  Using
-            # sf.SoundFile we read only one chunk (~5 MB) at a time,
-            # regardless of file length.
-            with sf.SoundFile(audio_path) as sf_file:
-                sample_rate = sf_file.samplerate
-                # sherpa-onnx Whisper silently discards audio beyond 30
-                # seconds.  Chunk at 28s to stay safely under the limit
-                # with margin for sample-rate rounding.  Each chunk is
-                # transcribed independently; segment timestamps are offset
-                # by chunk_start so the merged result preserves
-                # chronological order across the full file.
-                chunk_samples = 28 * sample_rate
-                total_frames = len(sf_file)
-                all_text_parts: list[str] = []
-                all_segments: list[TranscriptSegment] = []
+            # Detect silence boundaries and split audio at natural pauses
+            silence_boundaries = find_silence_boundaries(
+                audio_path,
+                min_silence_duration=0.8,
+                silence_threshold_db=-40.0,
+            )
+            chunks = split_at_silence(
+                audio_path,
+                silence_boundaries,
+                max_duration=25.0,
+            )
 
-                frame_offset = 0
-                while frame_offset < total_frames:
-                    sf_file.seek(frame_offset)
-                    chunk = sf_file.read(frames=chunk_samples, dtype="float32")
+            all_text_parts: list[str] = []
+            all_segments: list[TranscriptSegment] = []
 
-                    # Downmix stereo to mono after reading the chunk
-                    if chunk.ndim > 1:
-                        chunk = chunk.mean(axis=1)
+            for chunk_start_sec, chunk_audio in chunks:
+                # RMS-based silence filtering: skip chunks below -60 dB
+                rms = np.sqrt(np.mean(chunk_audio ** 2))
+                if rms < 0.001:  # ~-60 dB threshold
+                    logger.debug(
+                        "Skipping silent chunk at %.2fs (RMS=%.6f)",
+                        chunk_start_sec, rms,
+                    )
+                    continue
 
-                    chunk_start_sec = frame_offset / sample_rate
+                stream = self.recognizer.create_stream(hotwords=hotwords or None)
+                stream.accept_waveform(16000, chunk_audio)
+                self.recognizer.decode_stream(stream)
 
-                    if len(chunk) < sample_rate * 0.1:
-                        # Skip chunks shorter than 0.1s — too short to transcribe
-                        break
+                result = stream.result
+                chunk_text = result.text.strip()
 
-                    stream = self.recognizer.create_stream(hotwords=hotwords or None)
-                    stream.accept_waveform(sample_rate, chunk)
-                    self.recognizer.decode_stream(stream)
+                # Filter [BLANK_AUDIO] text from Whisper
+                if chunk_text and chunk_text != "[BLANK_AUDIO]":
+                    all_text_parts.append(chunk_text)
 
-                    result = stream.result
-                    chunk_text = result.text.strip()
-                    if chunk_text:
-                        all_text_parts.append(chunk_text)
-
-                    chunk_segments = self._build_segments(result)
-                    # Offset each segment's start_time by the chunk's offset
-                    # so timestamps are relative to the start of the full file.
-                    for seg in chunk_segments:
-                        all_segments.append(TranscriptSegment(
-                            start_time=seg.start_time + chunk_start_sec,
-                            text=seg.text,
-                        ))
-
-                    frame_offset += chunk_samples
+                chunk_segments = self._build_segments(result)
+                # Offset each segment's start_time by the chunk's offset
+                # so timestamps are relative to the start of the full file.
+                for seg in chunk_segments:
+                    all_segments.append(TranscriptSegment(
+                        start_time=seg.start_time + chunk_start_sec,
+                        text=seg.text,
+                    ))
 
             text = " ".join(all_text_parts)
             segments = all_segments
 
             logger.debug(
-                "Transcribed %s: %d chars, %d segments (chunked from %d frames)",
-                audio_path, len(text), len(segments), total_frames,
+                "Transcribed %s: %d chars, %d segments (%d chunks, %d silence boundaries)",
+                audio_path, len(text), len(segments), len(chunks), len(silence_boundaries),
             )
             return TranscriptionResult(text=text, segments=segments)
 

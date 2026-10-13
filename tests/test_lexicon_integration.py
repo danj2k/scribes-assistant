@@ -16,10 +16,14 @@ class TestTranscriptionWorkerHotwords:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
+             patch("transcriber.worker.find_silence_boundaries") as mock_find_silence, \
+             patch("transcriber.worker.split_at_silence") as mock_split, \
              patch.object(TranscriptionWorker, "load_model"):
-            # Short audio (< 28s) → single chunk, one create_stream call
-            mock_audio = np.zeros(16000, dtype="float32")
+            # Use non-silent audio so it passes RMS threshold
+            mock_audio = np.random.randn(16000).astype("float32") * 0.3
             mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
+            mock_find_silence.return_value = []
+            mock_split.return_value = [(0.0, mock_audio)]
 
             w = TranscriptionWorker("/tmp/model")
             w.recognizer = MagicMock()
@@ -35,9 +39,14 @@ class TestTranscriptionWorkerHotwords:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
+             patch("transcriber.worker.find_silence_boundaries") as mock_find_silence, \
+             patch("transcriber.worker.split_at_silence") as mock_split, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = np.zeros(16000, dtype="float32")
+            # Use non-silent audio so it passes RMS threshold
+            mock_audio = np.random.randn(16000).astype("float32") * 0.3
             mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
+            mock_find_silence.return_value = []
+            mock_split.return_value = [(0.0, mock_audio)]
 
             w = TranscriptionWorker("/tmp/model")
             w.recognizer = MagicMock()
@@ -54,9 +63,14 @@ class TestTranscriptionWorkerHotwords:
         import numpy as np
         from transcriber.worker import TranscriptionWorker
         with patch("transcriber.worker.sf") as mock_sf, \
+             patch("transcriber.worker.find_silence_boundaries") as mock_find_silence, \
+             patch("transcriber.worker.split_at_silence") as mock_split, \
              patch.object(TranscriptionWorker, "load_model"):
-            mock_audio = np.zeros(16000, dtype="float32")
+            # Use non-silent audio so it passes RMS threshold
+            mock_audio = np.random.randn(16000).astype("float32") * 0.3
             mock_sf.SoundFile = _make_mock_sf(mock_audio).SoundFile
+            mock_find_silence.return_value = []
+            mock_split.return_value = [(0.0, mock_audio)]
 
             w = TranscriptionWorker("/tmp/model")
             w.recognizer = MagicMock()
