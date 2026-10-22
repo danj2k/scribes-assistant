@@ -1,5 +1,46 @@
 # Scribe's Assistant — Development Log
 
+## 2026-10-22 — Fix: Whisper hallucination patterns in transcripts
+
+After the silence-aware chunking refactor (2d3f224), transcripts were
+polluted with hallucinated non-speech descriptions: `(growling)`,
+`[Loud growling]`, `*Gibberish*`, `[Distorted sound]`, `(phone buzzing)`,
+`(sniffing)`, `*Gasps*`, `[Dog growling]`, `(speaking in foreign language)`,
+`[ Silence ]`, `[no audio]`, and incomplete fragments like `(` or `[`.
+
+**Root cause:** Two-layer threshold mismatch. `silence.py` detects silence
+at -40 dB, but `worker.py` only skipped chunks with RMS below -60 dB
+(0.001). That 20 dB gap meant low-energy noise chunks (room tone, mic hum,
+breathing) passed the filter and reached Whisper, which interpreted them
+as speech-like patterns and produced descriptive hallucinations. The old
+blind 28-second chunking didn't have this problem because it produced
+fewer chunks overall — the silence-aware splitting creates more chunks at
+natural pause points, and those pause regions are where the low-energy
+noise lives.
+
+**Fix:** Two-layer defence:
+1. **RMS threshold raised** from 0.001 (-60 dB) to 0.005 (-46 dB),
+   aligning closer to the silence detection threshold.
+2. **Hallucination regex filter** (`_is_whisper_hallucination()`) catches
+   bracketed tags `[...]`, parenthesised sounds `(...)`, asterisk-wrapped
+   tags `*...*`, and "speaking in X language" variants. Applied to both
+   chunk-level text and individual segment text before storage.
+
+The hallucination filter is the primary defence — the RMS bump alone is
+insufficient because some hallucinated segments have *higher* energy than
+real speech (verified against real recordings: mic noise at RMS 0.078 vs
+speech at 0.050).
+
+**Files changed:**
+- `transcriber/worker.py` — raised RMS threshold, added
+  `_HALLUCINATION_PATTERNS` and `_is_whisper_hallucination()`, applied
+  filter at both chunk and segment level
+- `tests/test_hallucination_filter.py` — 30 tests covering all observed
+  hallucination patterns plus negative tests for real speech
+- `docs/ARCHITECTURE.md` — updated filtering description
+- `docs/KNOWN_ISSUES.md` — added resolved entry for hallucination patterns
+- `docs/IMPLEMENTATION_NOTES.md` — documented two-layer filtering defence
+
 ## 2026-09-26 — Fix: transcriber health check reports unhealthy during startup
 
 The transcriber container was reporting "unhealthy" immediately after

@@ -61,7 +61,7 @@ This separation ensures the large transcription libraries (sherpa-onnx, model we
 1. `transcriber/silence.py` runs ffmpeg's `silencedetect` filter on each audio file to find regions of silence (default: > 0.8s below -40 dB).
 2. `transcriber/splitter.py` splits the audio at the midpoint of each silence region, producing natural speech-boundary segments.
 3. Each segment is capped at 25 seconds (Whisper's limit is 30s) — if no silence is found within a 25s window, a forced split is inserted.
-4. Segments that are pure silence (RMS < -60 dB) or produce only `[BLANK_AUDIO]` text are filtered out before storage.
+4. Segments below -46 dB RMS are filtered before transcription (prevents Whisper from hallucinating on low-energy noise). After transcription, segments matching known Whisper hallucination patterns — bracketed tags like `[no audio]`, `[Silence]`, parenthesised sounds like `(growling)`, `(snoring)`, asterisk-wrapped tags like `*Gibberish*`, and "speaking in foreign language" variants — are also filtered out before storage.
 
 This eliminates the mid-sentence cuts and out-of-order transcript lines that occurred with the previous blind 28-second chunking approach.
 

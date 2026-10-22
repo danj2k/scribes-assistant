@@ -5,6 +5,7 @@ Handles model loading and audio file transcription.
 
 import os
 import hashlib
+import re
 import tarfile
 import time
 import logging
@@ -36,6 +37,34 @@ except ImportError:
 import urllib.request
 
 logger = logging.getLogger(__name__)
+
+
+# Whisper hallucination patterns: non-speech descriptions that Whisper
+# produces when fed low-energy audio. These are not actual transcriptions
+# but Whisper's attempts to describe ambient sounds, language tags, or
+# audio artifacts. Filtered to prevent them from polluting transcripts.
+_HALLUCINATION_PATTERNS = [
+    # Bracketed tags: [BLANK_AUDIO], [silence], [no audio], [Birds chirping], etc.
+    re.compile(r'^\s*\[.*\]\s*$', re.IGNORECASE),
+    # Parenthesised sound descriptions: (growling), (snoring), (Burps), etc.
+    re.compile(r'^\s*\(.*\)\s*$', re.IGNORECASE),
+    # Asterisk-wrapped language/sound tags: *Spanish*, *Gibberish*, *Mumbling*, etc.
+    re.compile(r'^\s*\*.*\*\s*$', re.IGNORECASE),
+    # "speaking in foreign language" variants
+    re.compile(r'^\s*\(speaking in .+ language\)\s*$', re.IGNORECASE),
+]
+
+
+def _is_whisper_hallucination(text: str) -> bool:
+    """Check if text matches known Whisper hallucination patterns.
+
+    Returns True if the text appears to be a non-speech description
+    rather than actual transcribed speech.
+    """
+    for pattern in _HALLUCINATION_PATTERNS:
+        if pattern.match(text):
+            return True
+    return False
 
 
 @dataclass
@@ -141,9 +170,16 @@ class TranscriptionWorker:
             all_segments: list[TranscriptSegment] = []
 
             for chunk_start_sec, chunk_audio in chunks:
-                # RMS-based silence filtering: skip chunks below -60 dB
+                # RMS-based silence filtering: skip chunks below -46 dB.
+                # This aligns with the silence detection threshold (-40 dB)
+                # to prevent Whisper from hallucinating on low-energy noise
+                # (background hum, room tone) that falls between the two
+                # thresholds. Raised from -60 dB after observing Whisper
+                # produce hallucinated non-speech descriptions like
+                # "(growling)", "*Spanish*", "[Birds chirping]" on chunks
+                # that passed the old -60 dB filter.
                 rms = np.sqrt(np.mean(chunk_audio ** 2))
-                if rms < 0.001:  # ~-60 dB threshold
+                if rms < 0.005:  # ~-46 dB threshold
                     logger.debug(
                         "Skipping silent chunk at %.2fs (RMS=%.6f)",
                         chunk_start_sec, rms,
@@ -157,18 +193,24 @@ class TranscriptionWorker:
                 result = stream.result
                 chunk_text = result.text.strip()
 
-                # Filter [BLANK_AUDIO] text from Whisper
-                if chunk_text and chunk_text != "[BLANK_AUDIO]":
+                # Filter Whisper hallucinations: [BLANK_AUDIO] and
+                # non-speech descriptions like (growling), *Spanish*,
+                # [Birds chirping], etc. These appear when Whisper is
+                # fed low-energy audio and tries to describe ambient
+                # sounds or language instead of transcribing speech.
+                if chunk_text and not _is_whisper_hallucination(chunk_text):
                     all_text_parts.append(chunk_text)
 
                 chunk_segments = self._build_segments(result)
                 # Offset each segment's start_time by the chunk's offset
                 # so timestamps are relative to the start of the full file.
+                # Also filter hallucination patterns from segment text.
                 for seg in chunk_segments:
-                    all_segments.append(TranscriptSegment(
-                        start_time=seg.start_time + chunk_start_sec,
-                        text=seg.text,
-                    ))
+                    if not _is_whisper_hallucination(seg.text):
+                        all_segments.append(TranscriptSegment(
+                            start_time=seg.start_time + chunk_start_sec,
+                            text=seg.text,
+                        ))
 
             text = " ".join(all_text_parts)
             segments = all_segments
