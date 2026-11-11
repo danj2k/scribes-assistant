@@ -52,6 +52,13 @@ _HALLUCINATION_PATTERNS = [
     re.compile(r'^\s*\*.*\*\s*$', re.IGNORECASE),
     # "speaking in foreign language" variants
     re.compile(r'^\s*\(speaking in .+ language\)\s*$', re.IGNORECASE),
+    # Incomplete/malformed annotations: lone delimiters or unclosed brackets
+    # that Whisper sometimes produces mid-hallucination, e.g. "*Sounds of a"
+    # with no closing asterisk, or a stray "[" or "]".
+    re.compile(r'^\s*[\[\]()*]\s*$'),  # lone delimiter
+    re.compile(r'^\s*\*[^*]+\s*$'),    # unclosed asterisk: *text with no closing *
+    re.compile(r'^\s*\[[^\]]*\s*$'),   # unclosed bracket: [text with no closing ]
+    re.compile(r'^\s*\([^)]*\s*$'),    # unclosed paren: (text with no closing )
 ]
 
 
@@ -168,8 +175,10 @@ class TranscriptionWorker:
 
             all_text_parts: list[str] = []
             all_segments: list[TranscriptSegment] = []
+            chunk_count = 0
 
             for chunk_start_sec, chunk_audio in chunks:
+                chunk_count += 1
                 # RMS-based silence filtering: skip chunks below -46 dB.
                 # This aligns with the silence detection threshold (-40 dB)
                 # to prevent Whisper from hallucinating on low-energy noise
@@ -187,6 +196,9 @@ class TranscriptionWorker:
                     continue
 
                 stream = self.recognizer.create_stream(hotwords=hotwords or None)
+                # The splitter already resampled to 16 kHz mono float32,
+                # so we pass 16000 here regardless of the source file's
+                # sample rate (recordings are captured at 48 kHz).
                 stream.accept_waveform(16000, chunk_audio)
                 self.recognizer.decode_stream(stream)
 
@@ -217,7 +229,7 @@ class TranscriptionWorker:
 
             logger.debug(
                 "Transcribed %s: %d chars, %d segments (%d chunks, %d silence boundaries)",
-                audio_path, len(text), len(segments), len(chunks), len(silence_boundaries),
+                audio_path, len(text), len(segments), chunk_count, len(silence_boundaries),
             )
             return TranscriptionResult(text=text, segments=segments)
 

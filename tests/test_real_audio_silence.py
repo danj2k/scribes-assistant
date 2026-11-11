@@ -10,7 +10,7 @@ import numpy as np
 import soundfile as sf
 
 from transcriber.silence import find_silence_boundaries
-from transcriber.splitter import split_at_silence
+from transcriber.splitter import split_at_silence, TARGET_SAMPLE_RATE
 
 # Path to last week's recordings (mounted into the workspace)
 REAL_AUDIO_DIR = "/workspace/2026-10-07_18-19-13"
@@ -67,7 +67,7 @@ def test_splitter_produces_ordered_chunks(filename):
         pytest.skip(f"File not found: {path}")
 
     boundaries = find_silence_boundaries(path)
-    chunks = split_at_silence(path, boundaries, max_duration=25.0)
+    chunks = list(split_at_silence(path, boundaries, max_duration=25.0))
 
     assert len(chunks) > 0, "Splitter must produce at least one chunk"
 
@@ -87,14 +87,14 @@ def test_splitter_produces_ordered_chunks(filename):
 
     # Verify no chunk exceeds max_duration (with small tolerance for rounding)
     for i, (start, audio) in enumerate(chunks):
-        duration = len(audio) / sample_rate
+        duration = len(audio) / TARGET_SAMPLE_RATE  # chunks are resampled to 16kHz
         assert duration <= 25.1, (
             f"Chunk {i} exceeds 25s: {duration:.2f}s (start={start:.2f}s)"
         )
 
     # Verify total coverage: sum of chunk durations should be close to
     # total file duration (allowing for small gaps at split points)
-    chunk_total = sum(len(audio) / sample_rate for _, audio in chunks)
+    chunk_total = sum(len(audio) / TARGET_SAMPLE_RATE for _, audio in chunks)
     assert abs(chunk_total - total_duration) < 2.0, (
         f"Chunk coverage mismatch: chunks={chunk_total:.1f}s, "
         f"file={total_duration:.1f}s"
@@ -113,7 +113,7 @@ def test_no_blind_28s_intervals(filename):
         pytest.skip(f"File not found: {path}")
 
     boundaries = find_silence_boundaries(path)
-    chunks = split_at_silence(path, boundaries, max_duration=25.0)
+    chunks = list(split_at_silence(path, boundaries, max_duration=25.0))
 
     if len(chunks) < 3:
         pytest.skip("Too few chunks to check for fixed intervals")
@@ -159,7 +159,7 @@ def test_kravidad_has_significant_silence():
 
     # And the splitter should produce chunks that respect silence boundaries
     # (not necessarily fewer chunks — the goal is better split points, not fewer chunks)
-    chunks = split_at_silence(path, boundaries, max_duration=25.0)
+    chunks = list(split_at_silence(path, boundaries, max_duration=25.0))
     
     # Verify that most chunks start near a silence boundary (within 2 seconds)
     # This ensures we're splitting at natural pauses, not mid-speech

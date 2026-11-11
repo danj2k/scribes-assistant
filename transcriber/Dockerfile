@@ -5,8 +5,11 @@ FROM python:3.11-slim
 # sherpa-onnx bundles libonnxruntime and libasound in its package directory,
 # and soundfile bundles libsndfile in _soundfile_data/.  No system audio
 # libraries are required.
+# ffmpeg is required by transcriber.silence for silence detection via
+# ffmpeg's silencedetect filter.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

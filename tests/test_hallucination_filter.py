@@ -32,6 +32,16 @@ class TestHallucinationFilter:
         "*Spanish*",
         "*Gibberish*",
         "*Mumbling*",
+        # Incomplete/malformed annotations (new patterns)
+        "[",
+        "]",
+        "*",
+        "(",
+        ")",
+        "*Sounds of a",
+        "*Background noise",
+        "[Unclosed bracket",
+        "(Unclosed paren",
     ])
     def test_hallucinations_detected(self, text):
         """Known hallucination patterns should be identified."""
