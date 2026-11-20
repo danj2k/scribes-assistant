@@ -88,13 +88,61 @@ class TestDownloadModel:
             assert (Path(tmp_model_dir) / f).exists()
 
     def test_download_failure(self, tmp_model_dir):
-        """Should raise RuntimeError if download fails."""
-        with patch(
-            "scripts.download_model.urllib.request.urlretrieve",
-            side_effect=URLError("network error"),
-        ):
-            with pytest.raises(RuntimeError, match="Download failed"):
-                download_model(tmp_model_dir)
+        """Should raise RuntimeError if download fails after all retries."""
+        # Mock time.sleep to avoid delays during test
+        with patch("scripts.download_model.time.sleep"):
+            with patch(
+                "scripts.download_model.urllib.request.urlretrieve",
+                side_effect=URLError("network error"),
+            ):
+                with pytest.raises(RuntimeError, match="Download failed after 5 attempts"):
+                    download_model(tmp_model_dir)
+
+    def test_download_retries_on_network_error(self, tmp_model_dir):
+        """Should retry download on transient network errors."""
+        call_count = 0
+
+        def failing_then_succeeding(url, path, reporthook=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise URLError("transient network error")
+            # Succeed on third attempt
+            Path(path).write_bytes(b"fake tar data")
+
+        with patch("scripts.download_model.time.sleep"):
+            with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=failing_then_succeeding):
+                with patch("scripts.download_model.tarfile.open") as mock_open:
+                    with patch("scripts.download_model._sha256_file", return_value=EXPECTED_SHA256["small"]):
+                        mock_tar = MagicMock()
+                        mock_tar.getmembers.return_value = [MagicMock() for _ in _required_files("small")]
+                        for i, m in enumerate(mock_tar.getmembers()):
+                            m.name = f'sherpa-onnx-whisper-small/{_required_files("small")[i]}'
+                        def fake_extract(member, path, **kwargs):
+                            (Path(path) / member.name).write_bytes(b"extracted")
+                        mock_tar.extract.side_effect = fake_extract
+                        mock_open.return_value.__enter__ = lambda s: mock_tar
+                        mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                        result = download_model(tmp_model_dir)
+
+        assert result == tmp_model_dir
+        assert call_count == 3, "Should have retried and succeeded on third attempt"
+
+    def test_download_no_retry_on_non_network_error(self, tmp_model_dir):
+        """Should not retry on non-network errors (e.g., disk full)."""
+        call_count = 0
+
+        def non_network_error(url, path, reporthook=None):
+            nonlocal call_count
+            call_count += 1
+            raise PermissionError("disk full")
+
+        with patch("scripts.download_model.time.sleep"):
+            with patch("scripts.download_model.urllib.request.urlretrieve", side_effect=non_network_error):
+                with pytest.raises(RuntimeError, match="Download failed"):
+                    download_model(tmp_model_dir)
+
+        assert call_count == 1, "Should not retry on non-network errors"
 
     def test_extraction_failure(self, tmp_model_dir):
         """Should raise RuntimeError if extraction fails."""

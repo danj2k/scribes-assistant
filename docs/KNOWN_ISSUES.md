@@ -36,3 +36,100 @@
 - Campaign wiki integration (mentioned in design doc as potential extension)
 - Better speaker diarisation if hardware improves
 - Support for concurrent sessions if needed in future
+
+## Network Resilience Issues (2026-11-20)
+
+Analysis of network instability and DNS resolution failure handling reveals several areas where the application may crash or fail ungracefully:
+
+### Issue 1: Bot startup crashes on DNS failure [FIXED 2026-11-20]
+
+**Location:** `bot/main.py:380` — `bot.run(token)`
+
+**Problem:** The bot's main entry point called `bot.run(token)` with no retry logic. If DNS resolution failed at startup (e.g., `discord.com` unreachable, DNS server down, network interface not yet ready), the bot would crash immediately with an unhandled exception. Docker's `restart: unless-stopped` policy would restart the container, but without exponential backoff, rapid restart loops could occur during extended network outages.
+
+**Fix:** Wrapped `bot.run(token)` in a retry loop with exponential backoff. The loop attempts up to 10 times with delays of 5s, 10s, 20s, 40s, 80s, 160s, 300s, 300s, 300s, 300s (capped at 5 minutes). Network-related exceptions (`ConnectionError`, `OSError`) trigger retries; non-network errors (invalid token, etc.) exit immediately. Each retry is logged with the attempt number and delay. After all retries are exhausted, the process exits with code 1 so Docker's restart policy applies.
+
+**Status:** Implemented in `bot/main.py:380-417`. Tests verify retry behavior and error handling.
+
+---
+
+### Issue 2: Voice connection has no retry with backoff
+
+**Location:** `bot/voice.py:60-82` — `connect_to_voice()`
+
+**Problem:** The voice connection logic catches generic `Exception` and logs it, but does not retry with backoff. If the Discord voice server is unreachable or DNS resolution fails during `/start`, the command returns an error message to the user, but there's no automatic retry. Users must manually retry `/start` after waiting.
+
+**Impact:** During transient network issues, users must manually retry the `/start` command. No automatic recovery.
+
+**Current behavior:** `voice_client.connect(reconnect=True, timeout=10.0)` will attempt to reconnect if the connection drops mid-session, but the initial connection has no retry logic.
+
+**Fix plan:** Add retry logic to `connect_to_voice()` with exponential backoff (3 attempts, 2s/4s/8s delays). Log each attempt. If all retries fail, return a clear error message suggesting the user retry manually after a delay.
+
+---
+
+### Issue 3: Delivery loop has no exponential backoff
+
+**Location:** `bot/delivery.py:42-58` — `_deliver()` and `delivery_loop()`
+
+**Problem:** The delivery loop catches `Exception` and logs it, then waits 60 seconds before retrying. During extended network outages, this produces a log entry every 60 seconds (log flooding) and wastes API calls that will fail. No circuit breaker pattern to detect sustained outages.
+
+**Impact:** Log flooding during network outages. Wasted API calls. No graceful degradation.
+
+**Current behavior:** If Discord API is unreachable, `_deliver()` logs the error and the loop continues. The next iteration tries again after 60 seconds.
+
+**Fix plan:** Implement exponential backoff for delivery failures: 60s, 120s, 240s, 480s, max 900s (15 min). Reset backoff on successful delivery. Add a circuit breaker: after 5 consecutive failures, log a warning and extend the backoff ceiling. This reduces log noise during extended outages.
+
+---
+
+### Issue 4: Model download has no retry logic [FIXED 2026-11-20]
+
+**Location:** `scripts/download_model.py:123` — `urllib.request.urlretrieve()`
+
+**Problem:** The model download from GitHub releases used `urllib.request.urlretrieve()` with no explicit retry logic. If DNS failed or the network dropped during download, the download would fail and the transcriber would crash. Docker's restart policy would restart the container, which would retry the download, but without backoff.
+
+**Fix:** Wrapped `urllib.request.urlretrieve()` in a retry loop with exponential backoff. The loop attempts up to 5 times with delays of 10s, 20s, 40s, 80s, 120s (capped at 2 minutes). Network-related exceptions (`urllib.error.URLError`, `ConnectionError`, `TimeoutError`) trigger retries; non-network errors (`PermissionError`, `FileNotFoundError`, etc.) exit immediately. Each retry prints a message with the attempt number and delay. After all retries are exhausted, a `RuntimeError` is raised with details of the final failure.
+
+**Status:** Implemented in `scripts/download_model.py:120-170`. Tests verify retry behavior, successful recovery after transient failures, and immediate exit on non-network errors.
+
+---
+
+### Issue 5: No circuit breaker for repeated failures
+
+**Location:** Multiple — `bot/delivery.py`, `bot/voice.py`, `transcriber/worker.py`
+
+**Problem:** There is no circuit breaker pattern to detect sustained network outages. Repeated failures are logged at the same frequency, producing log flooding during extended outages. No mechanism to distinguish transient failures from sustained outages.
+
+**Impact:** Log flooding during extended network outages. Difficult to distinguish transient issues from sustained problems.
+
+**Fix plan:** Implement a simple circuit breaker: track consecutive failures per component. After N consecutive failures (e.g., 5), log a critical warning and extend the retry interval. After M consecutive failures (e.g., 20), log a critical alert suggesting manual intervention. Reset the counter on success.
+
+---
+
+### Issue 6: Healthcheck does not verify network connectivity
+
+**Location:** `bot/healthcheck.py`, `transcriber/healthcheck.py`
+
+**Problem:** The healthcheck endpoints only verify that the HTTP server is running and the database is accessible. They do not verify network connectivity to Discord or HuggingFace. A container can be "healthy" according to Docker but unable to reach external services.
+
+**Impact:** Docker reports the container as healthy, but the bot cannot connect to Discord or download models. Users see no feedback until they try to use the bot.
+
+**Fix plan:** Add optional network connectivity checks to the healthcheck: attempt a DNS resolution of `discord.com` and `huggingface.co`. If DNS fails, return HTTP 503 (unhealthy). This allows Docker to detect network issues and restart the container. Make this configurable (disabled by default) to avoid false positives during brief network blips.
+
+---
+
+### Summary
+
+The application has several single points of failure related to network connectivity:
+
+1. **Bot startup** — [FIXED] now retries with exponential backoff (10 attempts, up to 5 min)
+2. **Voice connection** — no retry with backoff (still open)
+3. **Delivery loop** — no exponential backoff, log flooding (still open)
+4. **Model download** — [FIXED] now retries with exponential backoff (5 attempts, up to 2 min)
+5. **No circuit breaker** — repeated failures not distinguished from sustained outages (still open)
+6. **Healthcheck** — does not verify network connectivity (still open)
+
+Issues 1 and 4 are now resolved. The remaining issues are medium-to-low priority for normal operation (the bot runs on a stable home network), but become problematic during network outages, DNS server failures, or when running in environments with unreliable connectivity.
+
+**Recommended next steps:**
+- **Medium priority:** Issue 2 (voice connection), Issue 3 (delivery loop) — these affect user experience during transient issues
+- **Low priority:** Issue 5 (circuit breaker), Issue 6 (healthcheck) — these are operational improvements for extended outages

@@ -17,6 +17,7 @@ import os
 import time
 import hashlib
 import urllib.request
+import urllib.error
 import tarfile
 from pathlib import Path
 from typing import Optional
@@ -117,15 +118,58 @@ def download_model(
     print(f"  Approximate size: ~{ARCHIVE_SIZE_MB} MB")
     print()
 
-    start_time = time.time()
+    # Retry download with exponential backoff for transient network failures
+    # (DNS resolution, connection timeouts, HTTP 503).  The model archive is
+    # ~600 MB, so a full retry is expensive — but cheaper than a failed
+    # transcriber that can't start at all.
+    max_download_retries = 5
+    base_download_delay = 10  # seconds
+    max_download_delay = 120  # 2 minutes
 
-    try:
-        urllib.request.urlretrieve(url, str(archive_path), reporthook=_progress_hook)
-        sys.stderr.write("\n")
-    except Exception as e:
-        if archive_path.exists():
-            archive_path.unlink()
-        raise RuntimeError(f"Download failed: {e}") from e
+    start_time = time.time()
+    download_succeeded = False
+
+    for attempt in range(1, max_download_retries + 1):
+        try:
+            if attempt > 1:
+                print(f"  Retry attempt {attempt}/{max_download_retries}...")
+            urllib.request.urlretrieve(
+                url, str(archive_path), reporthook=_progress_hook
+            )
+            sys.stderr.write("\n")
+            download_succeeded = True
+            break
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            # Network-related failures — retry with backoff
+            if archive_path.exists():
+                archive_path.unlink()
+
+            if attempt == max_download_retries:
+                raise RuntimeError(
+                    f"Download failed after {max_download_retries} attempts: {exc}"
+                ) from exc
+
+            delay = min(
+                base_download_delay * (2 ** (attempt - 1)), max_download_delay
+            )
+            print(f"\n  Download failed (attempt {attempt}/{max_download_retries}): "
+                  f"{exc}")
+            print(f"  Retrying in {delay}s...")
+            time.sleep(delay)
+        except OSError as exc:
+            # Other OSError subclasses (PermissionError, FileNotFoundError, etc.)
+            # are not transient network issues — don't retry
+            if archive_path.exists():
+                archive_path.unlink()
+            raise RuntimeError(f"Download failed: {exc}") from exc
+        except Exception as exc:
+            # Any other unexpected errors — don't retry
+            if archive_path.exists():
+                archive_path.unlink()
+            raise RuntimeError(f"Download failed: {exc}") from exc
+
+    if not download_succeeded:
+        raise RuntimeError("Download failed — all retries exhausted")
 
     elapsed = time.time() - start_time
     print(f"  Download completed in {elapsed:.1f}s")

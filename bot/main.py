@@ -377,7 +377,41 @@ def main():
     # Register global error handler
     setup_error_handler(bot)
 
-    bot.run(token)
+    # Start bot with exponential backoff retry for network failures.
+    # DNS resolution failures, connection timeouts, and gateway issues
+    # are transient — retry with increasing delays instead of crashing
+    # immediately and relying on Docker's restart policy.
+    max_retries = 10
+    base_delay = 5  # seconds
+    max_delay = 300  # 5 minutes
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Starting bot (attempt {attempt}/{max_retries})...")
+            bot.run(token)
+            # bot.run() blocks until the bot closes normally
+            break
+        except (ConnectionError, OSError) as exc:
+            # Network-related failures: DNS, connection refused, timeout
+            if attempt == max_retries:
+                logger.error(
+                    f"Failed to start bot after {max_retries} attempts: {exc}"
+                )
+                sys.exit(1)
+
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            logger.warning(
+                f"Bot startup failed (attempt {attempt}/{max_retries}): {exc}. "
+                f"Retrying in {delay}s..."
+            )
+            time.sleep(delay)
+        except KeyboardInterrupt:
+            logger.info("Bot startup interrupted by user")
+            sys.exit(0)
+        except Exception as exc:
+            # Non-network errors (invalid token, etc.) — don't retry
+            logger.error(f"Bot startup failed with non-retryable error: {exc}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
