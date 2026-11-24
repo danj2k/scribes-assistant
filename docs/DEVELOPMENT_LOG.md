@@ -1,5 +1,43 @@
 # Scribe's Assistant — Development Log
 
+## 2026-11-24 — Fix: /start failing with "Could not establish a secure (DAVE) connection…"
+
+**Symptom:** `/start` always failed with "Could not establish a secure
+(DAVE) connection to Discord's voice server within 15 seconds. Please
+try again." after a Docker rebuild on or after 2026-11-01.
+
+**Root cause:** `bot/requirements.txt` had `davey>=0.1.4,<1`. davey
+0.2.0 (released 2026-11-01) is a breaking release: `process_commit()`
+and `process_welcome()` no longer update keys, and `DaveSession.ready`
+only becomes True after `prepare_transition()` is called (and
+`execute_transition()` for non-zero transition IDs). py-cord PR #3159
+never calls either method, so the MLS handshake completes
+(`dave_session.status == SessionStatus.active`) but `ready` stays False
+forever. The 15s poll in `bot/commands.py` timed out and aborted.
+py-cord's own receive/send paths also gate on `.ready`, so audio
+decryption wouldn't work even without our timeout.
+
+**Fix:**
+1. Pinned `davey>=0.1.4,<0.2` in `bot/requirements.txt` (0.1.7 is the
+   latest 0.1.x). Added a comment explaining the incompatibility and
+   the condition for removing the cap.
+2. Reworded the timeout warning in `bot/commands.py` to say the session
+   is being aborted (the previous wording said "proceeding anyway —
+   audio may fail" but the code then disconnected and aborted). The
+   warning now includes both `dave_session.status` and
+   `dave_session.ready` so the status-active/ready-False failure mode
+   is obvious in future logs.
+3. Added a "davey 0.2.0 breaks /start" entry to `docs/KNOWN_ISSUES.md`
+   (Technical Debt) and appended a note to the existing py-cord PR #3159
+   entry documenting the davey constraint.
+
+**To remove the pin:** either (a) py-cord PR #3159 is updated upstream
+to call `prepare_transition()`/`execute_transition()`, or (b) we
+monkey-patch the calls in `bot/main.py` (adjacent to the existing
+`RTPPacket.type`/`start_recording` patches).
+
+---
+
 ## 2026-10-22 — Fix: Whisper hallucination patterns in transcripts
 
 After the silence-aware chunking refactor (2d3f224), transcripts were

@@ -3,7 +3,20 @@
 # Discord's DAVE protocol").  Not yet merged into pycord master as of
 # July 2026.  When it merges and a new pycord release ships, replace
 # this with a pinned version (e.g. py-cord==2.9.0).
+#
+# davey cap: PR #3159 is incompatible with davey >=0.2.0 (released
+# 2026-11-01). davey 0.2.0 changed the MLS handshake: process_commit()
+# and process_welcome() no longer update keys, and DaveSession.ready
+# only becomes True after prepare_transition() is called (and
+# execute_transition() for non-zero transition IDs). PR #3159 never
+# calls either method, so the MLS handshake completes (status == active)
+# but ready stays False forever. The 15s poll in bot/commands.py times
+# out and /start aborts. py-cord's own receive/send paths also gate on
+# .ready, so audio decryption wouldn't work even without our timeout.
+# Remove the <0.2 cap once py-cord PR #3159 is updated to call
+# prepare_transition()/execute_transition(), or we monkey-patch it in
+# bot/main.py. 0.1.7 is the latest 0.1.x release.
 git+https://github.com/Pycord-Development/pycord@refs/pull/3159/head
 PyYAML>=6.0
 PyNaCl>=1.6,<1.7
-davey>=0.1.4,<1
+davey>=0.1.4,<0.2

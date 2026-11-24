@@ -136,8 +136,10 @@ def setup_commands(bot: commands.Bot):
                     if elapsed >= DAVE_WAIT_TIMEOUT:
                         bot.logger.warning(
                             f"DAVE handshake did not complete within "
-                            f"{DAVE_WAIT_TIMEOUT}s (status={dave_session.status}), "
-                            f"proceeding anyway — audio may fail"
+                            f"{DAVE_WAIT_TIMEOUT}s "
+                            f"(status={dave_session.status}, "
+                            f"ready={dave_session.ready}), "
+                            f"aborting session — audio would be undecryptable"
                         )
                         break
                     await asyncio.sleep(DAVE_POLL_INTERVAL)
